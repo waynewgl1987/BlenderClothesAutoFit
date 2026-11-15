@@ -36,8 +36,9 @@
 **1. 一键匹配（衣服 → 人物，默认）** —— 面板上有**两个按钮**，按衣服款式选：
 
 - **一键匹配（姿态+蒙皮）**：原来的逻辑，权重 → 手臂姿态校正 → 防穿模 → 绑定。袖口正常的衣服用这个；
-- **一键匹配（大袖/垂袖）**：同样的权重/防穿模/绑定，但**跳过手臂姿态校正**。大袖本来就不该贴着手臂转，
-  硬转会把手垂袖摆折出硬褶、推成平板，所以这类衣服用这个按钮，形状保持自然。
+- **一键匹配（大袖/垂袖）**：同样的权重/防穿模/绑定，但**不做手臂旋转**（旋转会把垂下来的大袖摆折出硬褶），
+  改为**袖口吸附**：按"沿手臂由内到外的距离"给平滑权重，只把袖口那一圈往人物手腕拉，肩部完全不动 ——
+  袖口能扣到手腕上，袖子形状不被扭。
 
 共同点：**权重传递**逐顶点找身体最近面 + 重心插值；**防穿模**只把插进身体的点沿法线推出来；**绑定**每顶点最多 4 骨、世界变换保持不变。
 
@@ -235,7 +236,7 @@ This add-on fixes all four inside Blender, with a progress bar and one button.
 **1. One-click match (garment → character, default)** — two buttons on the panel, pick by garment style:
 
 - **One-click match (pose + skin)** — the original pipeline: weights → arm-pose correction → penetration fix → bind. Use it for normal cuffs;
-- **One-click match (loose / bell sleeves)** — same weights / penetration / bind, but **skips the arm-pose correction**. Bell sleeves should not be rotated onto the arm; doing so folds hard creases and turns the drape into a flat plank.
+- **One-click match (loose / bell sleeves)** — same weights / penetration / bind, but **no arm rotation** (rotating a hanging sleeve folds hard creases). Instead it **snaps the cuffs**: a smooth weight along the arm pulls only the cuff ring onto the character's wrist, the shoulder stays put — cuffs land on the wrists without twisting the drape.
 
 **2. Reverse mode (character → garment)**
 

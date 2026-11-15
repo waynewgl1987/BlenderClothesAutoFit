@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 7, 0),
+    "version": (1, 7, 1),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -1302,6 +1302,64 @@ def fix_arm_pose(garment, body, armature, max_rot=10.0, strength=1.0,
     return max(1, iterations)
 
 
+# ================================================================== 大袖: 袖口吸附
+def snap_cuffs_to_arms(garment, armature, strength=1.0, max_move=0.15,
+                       progress=None, p0=30, p1=45):
+    """大袖/垂袖专用: 只把"袖口那一圈"往人物手腕拉过去。
+
+    不做旋转(旋转会把垂下来的大袖摆折成硬褶), 而是按"沿手臂由内到外的距离"给一个
+    平滑权重, 越靠袖口跟随越多, 肩部完全不动 —— 袖口能扣到手腕上, 形状不会被扭。
+    """
+    FW = _fam_weights(garment)
+    W = _wverts(garment).astype(np.float64)
+    FS = _smooth_fam(FW, W, 0.02, 2)
+    bones = _find_arm_bones(armature)
+    mw = armature.matrix_world
+    disp = np.zeros_like(W)
+    done, info = 0, {}
+    for side in ("l", "r"):
+        hb = bones.get("lowerarm_" + side)
+        hd = bones.get("hand_" + side)
+        if not hb or not hd:
+            continue
+        el = np.array(mw @ armature.pose.bones[hb].head, float)
+        wr = np.array(mw @ armature.pose.bones[hd].head, float)
+        d = wr - el
+        L = float(np.linalg.norm(d))
+        if L < 1e-6:
+            continue
+        d /= L
+        sel = FW["lowerarm_" + side] > 0.4
+        if int(sel.sum()) < 300:
+            continue
+        A = W[sel]
+        t = (A - el) @ d
+        t0 = float(np.percentile(t, 45))
+        t1 = float(t.max())
+        if t1 - t0 < 1e-4:
+            continue
+        cuff = A[t >= np.percentile(t, 90)]
+        C = cuff.mean(0)
+        delta = (wr - C) * float(strength)
+        dl = float(np.linalg.norm(delta))
+        if dl < 0.002:
+            continue
+        if dl > max_move:
+            delta *= max_move / dl
+            dl = max_move
+        f = np.clip((t - t0) / (t1 - t0), 0.0, 1.0)
+        f = f * f * (3.0 - 2.0 * f)                       # smoothstep
+        f *= np.clip((FS["lowerarm_" + side][sel] - 0.15) / 0.5, 0.0, 1.0)
+        disp[sel] += f[:, None] * delta
+        info[side] = (float(np.linalg.norm(wr - C)), dl)
+        done += 1
+        if progress:
+            progress.step(p0 + (p1 - p0) * done // 2, "袖口吸附 %s" % side)
+    if done:
+        _set_wverts(garment, W + disp)
+    return {"sides": done, "info": info}
+
+
 # ================================================================== ③ 防穿模
 def fit_penetration(garment, body, gap=0.008, max_push=0.05, progress=None, p0=50, p1=60):
     bv, polys, tree = _body_tree(body)
@@ -1652,12 +1710,19 @@ def run_match(context, op, skip_arm=False):
         if st.do_weights:
             pr.step(2, "传递权重")
             transfer_weights(st.garment, st.body, st.limit_weights, pr, 2, 30)
-        if st.do_arm_pose and not skip_arm:
-            pr.step(32, "手臂姿态校正")
-            fix_arm_pose(st.garment, st.body, arm, st.arm_max_rot, st.arm_strength,
-                         st.arm_max_move / 100.0, st.arm_iterations,
-                         st.arm_rigid_chunks, st.arm_str_up, st.arm_str_lo,
-                         st.weight_smooth, st.arm_str_cl, pr, 30, 50)
+        if st.do_arm_pose:
+            if skip_arm:
+                pr.step(32, "袖口吸附到手腕")
+                try:
+                    snap_cuffs_to_arms(st.garment, arm, st.arm_strength, 0.15, pr, 32, 45)
+                except Exception as e:
+                    print("[GarmentFit] 袖口吸附失败:", e)
+            else:
+                pr.step(32, "手臂姿态校正")
+                fix_arm_pose(st.garment, st.body, arm, st.arm_max_rot, st.arm_strength,
+                             st.arm_max_move / 100.0, st.arm_iterations,
+                             st.arm_rigid_chunks, st.arm_str_up, st.arm_str_lo,
+                             st.weight_smooth, st.arm_str_cl, pr, 30, 50)
         moved = 0
         if st.do_fit:
             pr.step(50, "防穿模")
