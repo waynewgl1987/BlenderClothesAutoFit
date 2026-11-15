@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 10, 3),
+    "version": (1, 11, 0),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -2188,6 +2188,76 @@ class GF_OT_delete_small(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class GF_OT_auto(bpy.types.Operator):
+    """一键完成：对齐位置 → 一键匹配（姿态+蒙皮）→ 袖子贴合手臂 ×2"""
+    bl_idname = "garment_fit.auto"
+    bl_label = "一键完成 (对齐+匹配+袖子贴合)"
+    bl_description = "按顺序自动执行：把衣服对齐到人物中心 → 权重/姿态/防穿模/绑定 → 袖子贴合手臂两次"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        st = context.scene.garment_fit
+        if not st.body or not st.garment:
+            self.report({"ERROR"}, "请先指定 人物身体 和 衣服")
+            return {"CANCELLED"}
+        if st.body == st.garment:
+            self.report({"ERROR"}, "身体和衣服不能是同一个物体")
+            return {"CANCELLED"}
+        if context.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+
+        # ---- 1) 对齐到人物中心 ----
+        pr = GF_Progress(100, "一键完成")
+        try:
+            pr.step(3, "对齐到人物中心")
+            Wb = _wverts(st.body).astype(np.float64)
+            Wg = _wverts(st.garment).astype(np.float64)
+            delta = _bbox_stats(Wb)[3] - _bbox_stats(Wg)[3]
+            if float(np.linalg.norm(delta)) > 1e-6:
+                _write_world(st.garment, Wg + delta)
+                st.garment.update_tag()
+            pr.step(8, "对齐完成（%.1f cm）" % (float(np.linalg.norm(delta)) * 100))
+        finally:
+            if pr.wm:
+                try:
+                    pr.wm.progress_end()
+                except Exception:
+                    pass
+            _ov_hide()
+
+        # ---- 2) 一键匹配(原流程) ----
+        res = run_match(context, self, loose_sleeve=False)
+        if res != {"FINISHED"}:
+            return res
+
+        # ---- 3) 袖子贴合手臂 x2 ----
+        arm = _arm(st.body, st.armature)
+        pr = GF_Progress(100, "袖子贴合手臂")
+        try:
+            for i in range(2):
+                pr.step(5 + i * 45, "贴合第 %d 遍" % (i + 1))
+                try:
+                    shrinkwrap_sleeves(st.garment, st.body, arm, 0.008, 0.15,
+                                       pr, 5 + i * 45, 50 + i * 45)
+                except Exception as e:
+                    print("[GarmentFit] 贴合失败:", e)
+                    break
+            pr.end("完成")
+        finally:
+            if pr.wm:
+                try:
+                    pr.wm.progress_end()
+                except Exception:
+                    pass
+            if pr.pct < 0.999:
+                _ov_hide()
+        msg = "一键完成：对齐 + 匹配 + 袖子贴合 2 遍"
+        st.stage = msg
+        self.report({"INFO"}, msg)
+        toast(msg, 5.0)
+        return {"FINISHED"}
+
+
 class GF_OT_scale_match(bpy.types.Operator):
     """把人物或衣服整体统一缩放到对方尺寸(只改大小, 不改比例)"""
     bl_idname = "garment_fit.scale_match"
@@ -2645,6 +2715,8 @@ class GF_PT_panel(bpy.types.Panel):
         box = lay.box()
         box.label(text="匹配方向", icon="ARROW_LEFTRIGHT")
         box.row(align=True).prop(st, "match_mode", expand=True)
+        lay.scale_y = 1.7
+        lay.operator("garment_fit.auto", icon="PLAY", text="一键完成 (对齐+匹配+袖子贴合)")
         lay.scale_y = 1.5
         lay.operator("garment_fit.match", icon="MOD_ARMATURE")
         lay.scale_y = 1.2
@@ -2858,7 +2930,7 @@ class GF_PT_export(bpy.types.Panel):
         lay.prop(st, "export_path", text="")
 
 
-CLASSES = (GF_Settings, GF_OT_match, GF_OT_match_loose, GF_OT_scale_match, GF_OT_trim_body,
+CLASSES = (GF_Settings, GF_OT_auto, GF_OT_match, GF_OT_match_loose, GF_OT_scale_match, GF_OT_trim_body,
            GF_OT_shrink_sleeves, GF_OT_delete_selected, GF_OT_delete_small,
            GF_OT_pose_only, GF_OT_weights_only,
            GF_OT_pick_body, GF_OT_pick_garment, GF_OT_export,
