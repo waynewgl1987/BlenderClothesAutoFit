@@ -61,12 +61,12 @@
 
 **4. 清理多余人体部位（独立按钮）**
 
-衣服网格里常"焊着"原作者的人体零件（手、脚、头）。面板「清理多余人体部位」：
+衣服网格里常"焊着"原作者的人体零件（手、脚、头）。面板「清理多余人体部位」用**两种判定取并集**：
 
-- 按**人物自身顶点组**（`hand_l` / `wrist_*` / `foot_r` / `toe_*` …）取人体部位点云；
-- 把衣服上离这些点 ≤ **判定距离**（默认 10 mm）的面删掉，只删重合的那一层，袖口/裤腿本体不动；
-- 手 / 脚 / 头 三个开关，默认删手+脚；
-- 实测这套盔甲：手部删掉 8,559 面（1,132,833 面里），删完手部 10 mm 内残留 0 个顶点。
+- **重合层**：按人物自身顶点组（`hand_l` / `wrist_*` / `foot_r` / `toe_*` …）取人体部位点云，把衣服上离这些点 ≤ **判定距离**（默认 10 mm）的面删掉；
+- **切断腕/踝以外**（默认开）：以人物的腕 / 踝关节为切点、沿 小臂 / 小腿 方向，把「越关节以后、且在半径内」的衣服几何整段删掉——专治"衣服上长出来的手／脚"比人物真手低／偏的情况；
+- 手 / 脚 / 头 三个开关（默认手+脚），切断半径默认 15 cm（半径调小只切贴身部分，调大能把手指尖也带走）；
+- 实测这套盔甲：袖口的手比人物真手低 11 cm，只按"重合"完全判不出来；开切断后删 195,855 面，手彻底消失。
 
 **5. 布料预处理（独立按钮 → 给 UE Chaos Cloth）**
 
@@ -136,6 +136,8 @@ Blender 的布料解算器**不能**导出到 UE。这一步是把网格准备�
 |---|---|---|
 | 手 / 脚 / 头 | 手+脚 | 要删哪几个部位（头默认关：领口容易被一起删掉） |
 | 判定距离 | 10 mm | 衣服顶点离人体这些部位多近算"重复"。人体零件通常重合在 5 mm 内；删不干净就调大，删到袖子就调小 |
+| 切断腕/踝以外 | 开 | 以腕/踝为切点，把关节以后的衣服几何整段切掉（长出来的手/脚就靠这个） |
+| 切断半径 | 15 cm | 切多宽。小→只切贴身一圈；大→连指尖/外扩的袖口一起切 |
 
 **手臂姿态校正**
 
@@ -249,12 +251,12 @@ Two buttons at the top of the panel, *Size match (uniform scale, proportions kep
 
 **4. Trim leftover body parts (separate button)**
 
-Garment meshes often still carry the original model's hands, feet or head. Panel **Trim leftover body parts**:
+Garment meshes often still carry the original model's hands, feet or head. Panel **Trim leftover body parts** uses two criteria (union):
 
-- finds the body's hand/foot/head point cloud from its own **vertex groups** (`hand_l`, `wrist_*`, `foot_r`, `toe_*` …);
-- deletes garment faces whose vertices are within **Distance** (default 10 mm) of those points — only the coincident layer goes, the sleeve/pant leg itself stays;
-- separate switches for hands / feet / head (hands + feet on by default);
-- measured on this armour: hands removed 8,559 of 1,132,833 faces, 0 vertices left within 10 mm.
+- **Coincident layer**: finds the body's hand/foot/head point cloud from its own **vertex groups** (`hand_l`, `wrist_*`, `foot_r`, `toe_*` …) and deletes garment faces within **Distance** (default 10 mm);
+- **Cut past wrist/ankle** (on by default): uses the character's wrist / ankle joints and the forearm / calf direction to remove everything beyond the joint inside a radius — this is what kills hands/feet that sit lower than the real ones;
+- separate switches for hands / feet / head (hands + feet by default); cut radius default 15 cm (smaller = tight cut, bigger = takes fingertips too);
+- measured on this armour: its hands sat **11 cm below** the character's hands, so proximity alone found nothing; with the joint cut it deleted 195,855 faces and the hands were gone.
 
 **5. Cloth pre-processing (separate button → for UE Chaos Cloth)**
 
@@ -324,6 +326,8 @@ Requirements: Blender **4.2+** (tested on 5.1), NumPy (bundled). No dependencies
 |---|---|---|
 | Hands / Feet / Head | hands + feet | which parts to strip (head off by default — it can take the collar with it) |
 | Distance | 10 mm | how close a garment vertex must be to that body part to count as a duplicate; raise it if leftovers remain, lower it if it eats the sleeve |
+| Cut past wrist/ankle | on | removes garment geometry beyond the wrist/ankle joint — this is what strips hands/feet that grew longer than the real ones |
+| Cut radius | 15 cm | how wide the cut is; smaller = tight ring, bigger = takes fingertips / flared cuffs too |
 
 **Arm-pose correction**
 

@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 4, 2),
+    "version": (1, 4, 3),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -112,6 +112,8 @@ class GF_Settings(bpy.types.PropertyGroup):
     trim_feet: bpy.props.BoolProperty(name="脚(脚踝/脚趾)", default=True)
     trim_head: bpy.props.BoolProperty(name="头/脖子", default=False)
     trim_margin: bpy.props.FloatProperty(name="判定距离(mm)", default=10.0, min=1.0, max=100.0, precision=0)
+    trim_cut: bpy.props.BoolProperty(name="切断腕/踝以外(袖口/裤脚)", default=True)
+    trim_cut_radius: bpy.props.FloatProperty(name="切断半径(cm)", default=15.0, min=3.0, max=30.0, precision=1)
     trim_info: bpy.props.StringProperty(name="上次清理", default="")
 
     do_arm_pose: bpy.props.BoolProperty(name="校正手臂姿态(POSE不匹配)", default=True)
@@ -534,8 +536,54 @@ def _body_region_points(body, keys, min_w=0.25):
     return np.array(out, float)
 
 
-def trim_body_parts(garment, body, hands=True, feet=True, head=False, margin=0.015):
-    """把衣服上与人物手/脚/头重合的面删掉。返回统计 dict"""
+def _find_part_bone(armature, keys, side):
+    """按名字找某侧的主骨(最短的那个), 排除脚趾/校正骨"""
+    best = None
+    for b in armature.data.bones:
+        low = b.name.lower()
+        if _side_of(low) != side:
+            continue
+        if any(x in low for x in ("toe", "ball", "corrective", "bck", "fwd", "twist")):
+            continue
+        if any(k in low for k in keys):
+            if best is None or len(b.name) < len(best.name):
+                best = b
+    return best
+
+
+def _limb_gates(armature, hands=True, feet=True):
+    """腕/踝关节: (名字, 关节世界坐标, 肢体向外方向的单位向量, 半径倍数)。
+    方向 = 父骨.head -> 本骨.head, 也就是 小臂->腕 / 小腿->踝。"""
+    mw = armature.matrix_world
+    gates = []
+    for side in ("l", "r"):
+        if hands:
+            b = _find_part_bone(armature, ("hand", "wrist"), side)
+            if b is not None and b.parent is not None:
+                o = np.array(mw @ b.head_local, float)
+                p = np.array(mw @ b.parent.head_local, float)
+                d = o - p
+                n = float(np.linalg.norm(d))
+                if n > 1e-6:
+                    gates.append(("hand_" + side, o, d / n, 1.0))
+        if feet:
+            b = _find_part_bone(armature, ("foot", "ankle"), side)
+            if b is not None and b.parent is not None:
+                o = np.array(mw @ b.head_local, float)
+                p = np.array(mw @ b.parent.head_local, float)
+                d = o - p
+                n = float(np.linalg.norm(d))
+                if n > 1e-6:
+                    gates.append(("foot_" + side, o, d / n, 1.5))
+    return gates
+
+
+def trim_body_parts(garment, body, armature=None, hands=True, feet=True, head=False,
+                    margin=0.01, cut_limbs=True, cut_radius=0.15, cut_len=0.5):
+    """删掉衣服上多余的人体部位。两种判定取并集:
+    ① 与人物手/脚/头表面重合的顶点(<= margin);
+    ② 腕/踝以外的整段(沿肢体方向 t>0, 且离肢体轴 < cut_radius) —— 连"长出来的手"一起切掉。
+    返回统计 dict"""
     parts = [p for p, on in (("hands", hands), ("feet", feet), ("head", head)) if on]
     if not parts:
         raise ValueError("没有勾选任何部位（手 / 脚 / 头）")
@@ -552,14 +600,10 @@ def trim_body_parts(garment, body, hands=True, feet=True, head=False, margin=0.0
             continue
         pts.append(P)
         used.append(p)
-    if not pts:
-        raise ValueError("人物身上找不到手/脚/头对应的顶点组，无法判定要删哪里")
-    P = np.vstack(pts)
 
-    kd = KDTree(len(P))
-    for i in range(len(P)):
-        kd.insert(Vector(P[i].tolist()), i)
-    kd.balance()
+    gates = _limb_gates(armature, hands, feet) if (cut_limbs and armature) else []
+    if not pts and not gates:
+        raise ValueError("人物身上找不到手/脚/头对应的顶点组，也没有可用的腕/踝关节")
 
     n = len(me.vertices)
     co = np.empty(n * 3, np.float32)
@@ -567,9 +611,25 @@ def trim_body_parts(garment, body, hands=True, feet=True, head=False, margin=0.0
     mw = _wm(garment)
     W = co.reshape(-1, 3) @ mw[:3, :3].T + mw[:3, 3]
     mask = np.zeros(n, bool)
-    for i in range(n):
-        _, _, dist = kd.find(Vector(W[i].astype(float).tolist()))
-        mask[i] = dist < margin
+
+    if pts:
+        P = np.vstack(pts)
+        kd = KDTree(len(P))
+        for i in range(len(P)):
+            kd.insert(Vector(P[i].tolist()), i)
+        kd.balance()
+        for i in range(n):
+            _, _, dist = kd.find(Vector(W[i].astype(float).tolist()))
+            mask[i] = dist < margin
+
+    for nm, o, d, rk in gates:
+        rel = W - o
+        t = rel @ d
+        radial = np.linalg.norm(rel - np.outer(t, d), axis=1)
+        mask |= (t > 0.0) & (t < cut_len) & (radial < cut_radius * rk)
+        # 脚: 踝点附近再兜一圈(脚是往前长的, 不在小腿轴线上)
+        if nm.startswith("foot"):
+            mask |= np.linalg.norm(rel, axis=1) < cut_radius * rk
 
     bm = bmesh.new()
     bm.from_mesh(me)
@@ -585,7 +645,8 @@ def trim_body_parts(garment, body, hands=True, feet=True, head=False, margin=0.0
         me.update()
     bm.free()
     return {"faces": nf, "verts": nv, "parts": used, "missing": missing,
-            "margin": margin, "left_faces": len(me.polygons)}
+            "gates": len(gates), "margin": margin, "cut_radius": cut_radius,
+            "cut_len": cut_len, "left_faces": len(me.polygons)}
 
 
 # 骨骼命名归一化: 支持 UE / Mixamo / Maya / Unity / 3ds Max 等常见写法
@@ -1537,10 +1598,12 @@ class GF_OT_trim_body(bpy.types.Operator):
         if context.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
 
+        arm = _arm(st.body, st.armature)
         try:
-            res = trim_body_parts(st.garment, st.body, st.trim_hands,
+            res = trim_body_parts(st.garment, st.body, arm, st.trim_hands,
                                   st.trim_feet, st.trim_head,
-                                  st.trim_margin / 1000.0)
+                                  st.trim_margin / 1000.0,
+                                  st.trim_cut, st.trim_cut_radius / 100.0)
         except ValueError as e:
             self.report({"ERROR"}, str(e))
             print("[GarmentFit] 清理失败:", e)
@@ -1548,9 +1611,12 @@ class GF_OT_trim_body(bpy.types.Operator):
 
         if res["faces"] == 0:
             msg = "没找到与人物重合的部位（容差 %.0f mm）" % (res["margin"] * 1000.0)
+            if res["gates"] == 0:
+                msg += " · 没找到骨架的腕/踝关节"
         else:
-            msg = "删除 %d 面，剩 %d 面（容差 %.0f mm）" % (
-                res["faces"], res["left_faces"], res["margin"] * 1000.0)
+            msg = "删除 %d 面，剩 %d 面（容差 %.0f mm，切断半径 %.0f cm）" % (
+                res["faces"], res["left_faces"], res["margin"] * 1000.0,
+                res["cut_radius"] * 100.0)
         if res["missing"]:
             msg += " · 没找到: " + "/".join(res["missing"])
         st.trim_info = msg
@@ -1839,6 +1905,10 @@ class GF_PT_panel(bpy.types.Panel):
         row.prop(st, "trim_feet")
         row.prop(st, "trim_head")
         box.prop(st, "trim_margin")
+        box.prop(st, "trim_cut")
+        col = box.column(align=True)
+        col.enabled = st.trim_cut
+        col.prop(st, "trim_cut_radius")
         box.operator("garment_fit.trim_body", icon="TRASH", text="删除衣服上的手/脚/头")
         if st.trim_info:
             box.label(text=st.trim_info, icon="INFO")
