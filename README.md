@@ -44,7 +44,22 @@
 
 把人物整体缩放到衣服的尺寸，旋转人物手臂骨骼塞进袖子，可选烘焙成新的静止姿势，再给衣服蒙皮。
 
-**3. 布料预处理（独立按钮 → 给 UE Chaos Cloth）**
+**3. 尺寸匹配（两个按钮，统一缩放 + 可选对齐位置）**
+
+面板顶部「尺寸匹配 (统一缩放, 比例不变)」两个按钮，只改大小、不改比例：
+
+| 按钮 | 改谁 | 什么时候用 |
+|---|---|---|
+| **人物 → 衣服** | 人物（骨架 + 身体一起） | 衣服是对的，人物比例/单位不对 |
+| **衣服 → 人物** | 衣服几何 | 人物是对的（UE 里的标准角色），衣服是从别处导进来的 |
+
+- **缩放基准**：按高度 / 按包围盒对角线 / 按手臂(肩→腕)；
+- **同时对齐位置**：勾上后两个物体的**包围盒中心**重合成同一个点（坐标位置一致）；关掉就只改尺寸、位置保持原样；
+- **护手（袖口不盖手掌）**：缩放前先比"衣服袖口横向到达距离"和"人物手腕距离（肩关节 + 手臂链长，用静止姿势算，和当前 T/A-pose 无关）"，会盖住手掌就自动夹紧比例，面板上提示原始比例和实际比例；
+- 人物的缩放是改 `armature.matrix_world`，导出时会被烘进骨骼和顶点，所以 UE 里是干净的 1:1；
+- 对已蒙皮的衣服做「人物 → 衣服」时，会先解除绑定并保住世界变换（否则"两边一起缩放等于没匹配"）。
+
+**4. 布料预处理（独立按钮 → 给 UE Chaos Cloth）**
 
 Blender 的布料解算器**不能**导出到 UE。这一步是把网格准备好，让 UE 的解算器能用：
 
@@ -56,13 +71,13 @@ Blender 的布料解算器**不能**导出到 UE。这一步是把网格准备�
 
 实测（62 万顶点衣服）：碎块 595 → 1，顶点 622,715 → 593,924，Sim 网格 5,966 顶点 / 12,000 面，可模拟占比 75%。
 
-**4. 导出**
+**5. 导出**
 
 - **只衣服 / 只人物 / 两个一起**，始终带骨架；
 - 可选**带上 Sim 网格**；
 - 把场景缩放（比如 0.01）烘进顶点和骨骼 → UE 里 1:1 米制、`scale = 1`。
 
-**5. 安全保护**
+**6. 安全保护**
 
 - 自动识别骨骼命名（UE `upperarm_l`、Mixamo `LeftArm`、Maya `l_upperarm`、Unity `LeftForeArm`…）；
 - 衣服与身体尺寸差太多时自动缩放；比例超过 5 倍直接报错，**不会毁模型**；
@@ -97,6 +112,14 @@ Blender 的布料解算器**不能**导出到 UE。这一步是把网格准备�
 |---|---|---|
 | 传递蒙皮权重 | 开 | 从身体重建全部顶点组 |
 | 每顶点骨骼数 | 4 | UE 标准 |
+
+**尺寸匹配**
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| 缩放基准 | 按高度 | 连体衣/全身服最稳；上衣/裤子改用「按包围盒对角线」；要袖口正好落在手腕选「按手臂(肩→腕)」 |
+| 同时对齐位置 | 开 | 两个包围盒中心重合到同一点；关掉只改尺寸 |
+| 护手（袖口不盖手掌） | 开 | 比较衣服袖口横向距离和人物手腕距离，超标自动夹紧，面板显示"应付比例 → 实际比例" |
 
 **手臂姿态校正**
 
@@ -193,7 +216,22 @@ This add-on fixes all four inside Blender, with a progress bar and one button.
 
 Scales the character to the garment's height, rotates the character's arm bones into the sleeves, optionally bakes it as the new rest pose, then skins the garment.
 
-**3. Cloth pre-processing (separate button → for UE Chaos Cloth)**
+**3. Size match (two buttons, uniform scale + optional position alignment)**
+
+Two buttons at the top of the panel, *Size match (uniform scale, proportions kept)*:
+
+| Button | Who changes | When |
+|---|---|---|
+| **Character → Garment** | character (armature + body) | the garment is right, the character's scale/units are not |
+| **Garment → Character** | garment geometry | the character is right (your UE hero), the garment came from somewhere else |
+
+- **Scale basis**: height / bounding-box diagonal / arm (shoulder→wrist);
+- **Align positions** (on by default): makes the two bounding-box centers coincide, so both objects share one coordinate frame; turn it off to change size only;
+- **Cuff guard (sleeves must not swallow the palms)**: compares the garment's lateral sleeve reach with the character's wrist reach (shoulder joint + arm chain length, measured in rest pose, so mismatched T/A poses don't fool it) and clamps the factor if needed, reporting both the requested and applied factor;
+- The character is scaled through `armature.matrix_world`, which the FBX export bakes into bones and vertices — clean 1:1 in UE;
+- For an already-skinned garment, *Character → Garment* detaches the garment and keeps its world transform first (otherwise scaling both sides is a no-op match).
+
+**4. Cloth pre-processing (separate button → for UE Chaos Cloth)**
 
 Blender's cloth solver **cannot** be exported to UE. This step prepares the mesh so UE's solver can use it:
 
@@ -205,13 +243,13 @@ Blender's cloth solver **cannot** be exported to UE. This step prepares the mesh
 
 Measured on a 622k-vertex garment: shells 595 → 1, verts 622,715 → 593,924, sim mesh 5,966 verts / 12,000 tris, 75% simulatable.
 
-**4. Export**
+**5. Export**
 
 - **Garment only / Character only / Both**, always with the skeleton;
 - optional **Sim mesh**;
 - bakes the scene scale (e.g. 0.01) into vertices and bones → clean 1:1 metric FBX, `scale = 1` in UE.
 
-**5. Safety rails**
+**6. Safety rails**
 
 - Auto bone-name detection (UE `upperarm_l`, Mixamo `LeftArm`, Maya `l_upperarm`, Unity `LeftForeArm`…);
 - auto scale when sizes differ wildly; hard error above 5× instead of destroying the mesh;
@@ -246,6 +284,14 @@ Requirements: Blender **4.2+** (tested on 5.1), NumPy (bundled). No dependencies
 |---|---|---|
 | Transfer weights | on | rebuilds all vertex groups from the body |
 | Bones per vertex | 4 | UE standard |
+
+**Size match**
+
+| Parameter | Default | Notes |
+|---|---|---|
+| Scale basis | Height | safest for full-body outfits; use *Bounding-box diagonal* for tops/pants; *Arm (shoulder→wrist)* puts the cuffs exactly at the wrists |
+| Align positions | on | makes both bounding-box centers coincide; off = resize only |
+| Cuff guard | on | compares the garment's sleeve reach with the character's wrist reach and clamps the factor, showing requested vs applied |
 
 **Arm-pose correction**
 

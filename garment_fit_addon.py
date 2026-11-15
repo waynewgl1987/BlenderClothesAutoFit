@@ -12,16 +12,22 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
   ④ 绑定        Armature 修改器 + 父级人物骨架(每顶点 4 骨)
   ⑤ 导出        FBX(烘焙缩放, 米制, 共用人物 Skeleton)
 
+尺寸匹配(两个按钮, 统一缩放, 只改尺寸不改比例):
+  人物 -> 衣服  把人物(含骨架)缩放到衣服尺寸
+  衣服 -> 人物  把衣服几何缩放到人物尺寸
+  护手: 缩放前先测"袖口在手臂上的覆盖比例", 夹紧/抬高比例,
+        保证袖口停在手腕以内, 不包住手掌(按高度/对角线匹配时尤其重要)
+
 进度: 状态栏进度条 + 面板百分比/阶段。
 """
 
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 3, 0),
+    "version": (1, 4, 0),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
-    "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX",
+    "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
     "category": "Rigging",
 }
 
@@ -85,6 +91,20 @@ class GF_Settings(bpy.types.PropertyGroup):
     bake_body: bpy.props.BoolProperty(name="把人物姿势烘焙成静止姿势", default=True)
     do_weights: bpy.props.BoolProperty(name="传递蒙皮权重", default=True)
     limit_weights: bpy.props.IntProperty(name="每顶点骨骼数", default=4, min=1, max=8)
+
+    scale_metric: bpy.props.EnumProperty(
+        name="缩放基准",
+        items=[("HEIGHT", "按高度", "用世界包围盒高度比；连体衣/全身服最稳"),
+               ("DIAGONAL", "按包围盒对角线", "用包围盒对角线比；上衣/裤子等局部件更稳"),
+               ("ARM", "按手臂(肩→腕)", "用肩到手腕的长度比；袖口正好落在手腕，不盖手掌")],
+        default="HEIGHT")
+    guard_cuff: bpy.props.BoolProperty(
+        name="护手(袖口不盖手掌)", default=True,
+        description="缩放时限制比例，让袖口停在手腕以内，不包住手掌")
+    align_positions: bpy.props.BoolProperty(
+        name="同时对齐位置(包围盒中心)", default=True,
+        description="缩放后把两个物体的包围盒中心对到同一点；关闭则只改尺寸，位置不动")
+    scale_info: bpy.props.StringProperty(name="上次尺寸匹配", default="")
 
     do_arm_pose: bpy.props.BoolProperty(name="校正手臂姿态(POSE不匹配)", default=True)
     weight_smooth: bpy.props.IntProperty(name="权重场平滑(防拉裂)", default=2, min=0, max=6)
@@ -261,6 +281,216 @@ def _check_scale(body, garment):
         return ("衣服与身体尺寸不一致（衣服 %.2fm / 身体 %.2fm，比例 %.1f）。"
                 "请检查物体的 scale / 父级缩放是否一致，或先把缩放 Apply 掉。" % (sg, sb, r))
     return None
+
+
+# ================================================================== 尺寸匹配
+# 两个按钮: 人物 -> 衣服, 衣服 -> 人物。都是统一缩放(比例不变), 只改尺寸。
+# 可选"对齐位置": 让两个物体的包围盒中心重合(同一套坐标)。
+# 护手: 用"侧向最远点"比较衣服袖口和人物手腕(取 95 分位, 避开毛边/裙摆外扩),
+#       缩放后要求 袖口 <= 手腕, 否则夹紧(衣服)或抬高(人物)比例 —— 不会包住手掌。
+# 手腕/肩肘用骨架的静止姿势关节位置, 不受当前 pose 影响(衣服和人物姿势不同也能测)。
+
+def _bbox_stats(W):
+    lo = W.min(0)
+    hi = W.max(0)
+    return lo, hi, (hi - lo), (lo + hi) * 0.5
+
+
+def _cuff_sides(body, armature):
+    """每侧: 水平侧向单位向量 d、肩关节 sh、手臂链长(肩→肘→腕)。
+    用静止姿势的关节(bone.head_local), 所以人物当前摆什么姿势都不影响测量。"""
+    names = _find_arm_bones(armature)
+    mw = armature.matrix_world
+    Wb = _wverts(body).astype(np.float64)
+    cb = _bbox_stats(Wb)[3]
+    out = {}
+    for side in ("l", "r"):
+        up = names.get("upperarm_" + side)
+        low = names.get("lowerarm_" + side)
+        if not up or not low:
+            continue
+        bu = armature.data.bones.get(up)
+        bl = armature.data.bones.get(low)
+        bh = armature.data.bones.get(names.get("hand_" + side) or "")
+        if bu is None or bl is None:
+            continue
+        sh = np.array(mw @ bu.head_local, float)
+        el = np.array(mw @ bl.head_local, float)
+        wr = np.array(mw @ bh.head_local, float) if bh is not None \
+            else np.array(mw @ bl.tail_local, float)
+        d = wr - cb
+        d[2] = 0.0
+        n = float(np.linalg.norm(d))
+        if n < 1e-6:
+            continue
+        chain = float(np.linalg.norm(el - sh) + np.linalg.norm(wr - el))
+        out[side] = (d / n, sh, chain)
+    return out, cb
+
+
+def _lateral_reach(W, origin, d, pct=95.0):
+    """点云在侧向 d 上离 origin 的最远距离(取 pct 分位, 抗毛边/外扩)"""
+    t = (W - origin) @ d
+    t = t[t > 0.02]
+    if t.size < 50:
+        return None
+    return float(np.percentile(t, pct))
+
+
+def _cuff_limits(sides, Wg, reach_origin, wrist_origin):
+    """每侧 (衣服袖口距离, 人物手腕距离)。
+    人物侧用"肩关节侧向距离 + 手臂链长", 等价于把手臂摆平后的腕点距离,
+    这样衣服和人物姿势不同(比如衣服 T-pose、人物 A-pose)也能比。"""
+    out = {}
+    for side, (d, sh, chain) in sides.items():
+        r = _lateral_reach(Wg, reach_origin, d)
+        wref = float((sh - wrist_origin) @ d) + chain
+        if r is None or wref < 1e-6:
+            continue
+        out[side] = (r, wref)
+    return out
+
+
+def _is_under(obj, root):
+    p = obj.parent
+    while p:
+        if p == root:
+            return True
+        p = p.parent
+    return False
+
+
+def _write_world(o, W):
+    """写世界坐标顶点(带形态键时写 Basis, 否则写 mesh)"""
+    me = o.data
+    if getattr(me, "shape_keys", None) and len(me.shape_keys.key_blocks):
+        mw = _wm(o)
+        inv = np.linalg.inv(mw[:3, :3])
+        loc = (W - mw[:3, 3]) @ inv.T
+        me.shape_keys.key_blocks[0].data.foreach_set("co", loc.astype(np.float32).ravel())
+        return True
+    _set_wverts(o, W)
+    return False
+
+
+def _nominal_k(who, metric, stats):
+    """按基准算原始比例: who = 'GARMENT'(缩衣服) / 'BODY'(缩人物)"""
+    sb, db = stats["body"]
+    sg, dg = stats["garment"]
+    if metric == "DIAGONAL":
+        k = (db / dg) if who == "GARMENT" else (dg / db)
+    elif metric == "ARM":
+        return None
+    else:
+        k = (sb / sg) if who == "GARMENT" else (sg / sb)
+    return k
+
+
+def _scale_stats(body, garment):
+    Wb = _wverts(body).astype(np.float64)
+    Wg = _wverts(garment).astype(np.float64)
+    _, _, extb, cb = _bbox_stats(Wb)
+    _, _, extg, cg = _bbox_stats(Wg)
+    bstat = (float(extb[2]), float(np.linalg.norm(extb)), Wb, cb)
+    gstat = (float(extg[2]), float(np.linalg.norm(extg)), Wg, cg)
+    if min(bstat[0], gstat[0], bstat[1], gstat[1]) < 1e-6:
+        raise ValueError("尺寸为 0，物体可能被缩放到不可见")
+    return bstat, gstat
+
+
+def scale_garment_to_body(body, garment, armature=None, metric="HEIGHT",
+                          guard_cuff=True, align=True):
+    """把衣服整体统一缩放到人物尺寸(可同时让包围盒中心重合)。返回信息 dict"""
+    bstat, gstat = _scale_stats(body, garment)
+    hb, db, Wb, cb = bstat
+    hg, dg, Wg, cg = gstat
+    stats = {"body": (hb, db), "garment": (hg, dg)}
+    pivot = cb                                     # 缩放/对齐的落点是人物包围盒中心
+
+    sides = _cuff_sides(body, armature)[0] if armature else {}
+    want = bool(sides) and (guard_cuff or metric == "ARM")
+    # 对齐时衣服绕自身中心缩放后整体搬到人物中心; 不对齐时直接绕人物中心缩放
+    r_origin = cg if align else cb
+    limits = _cuff_limits(sides, Wg, r_origin, cb) if want else {}
+    caps = [(w / r) for r, w in limits.values() if r > 1e-9]
+
+    if metric == "ARM":
+        if not caps:
+            raise ValueError("没检测到袖子，不能按手臂匹配；请改用 按高度 / 按包围盒对角线")
+        k = min(caps)
+    else:
+        k = _nominal_k("GARMENT", metric, stats)
+
+    k_nom = k
+    capped = False
+    if guard_cuff and caps and k > min(caps) + 1e-6:
+        k, capped = min(caps), True
+    if k < 0.05 or k > 20.0:
+        raise ValueError("缩放比例 x%.2f 太离谱，请检查单位 / 父子缩放" % k)
+
+    if align:
+        W2 = pivot + (Wg - cg) * k                 # 中心重合
+    else:
+        W2 = pivot + (Wg - pivot) * k
+    shape_keys = _write_world(garment, W2)
+    garment.update_tag()
+    return {"k": k, "k_nominal": k_nom, "capped": capped, "metric": metric,
+            "sleeves": len(limits), "shape_keys": shape_keys, "align": align}
+
+
+def scale_body_to_garment(body, garment, armature, metric="HEIGHT",
+                          guard_cuff=True, align=True):
+    """把人物(骨架+身体)统一缩放到衣服尺寸(可同时让包围盒中心重合)。返回信息 dict"""
+    bstat, gstat = _scale_stats(body, garment)
+    hb, db, Wb, cb = bstat
+    hg, dg, Wg, cg = gstat
+    stats = {"body": (hb, db), "garment": (hg, dg)}
+    pivot = cg                                     # 落点是衣服包围盒中心
+
+    sides = _cuff_sides(body, armature)[0]
+    want = bool(sides) and (guard_cuff or metric == "ARM")
+    w_origin = cb if align else cg                 # 对齐时人物绕自身中心缩放
+    limits = _cuff_limits(sides, Wg, cg, w_origin) if want else {}
+    needs = [(r / w) for r, w in limits.values() if w > 1e-9]
+
+    if metric == "ARM":
+        if not needs:
+            raise ValueError("没检测到袖子，不能按手臂匹配；请改用 按高度 / 按包围盒对角线")
+        k = max(needs)
+    else:
+        k = _nominal_k("BODY", metric, stats)
+
+    k_nom = k
+    capped = False
+    if guard_cuff and needs and k < max(needs) - 1e-6:
+        k, capped = max(needs), True
+    if k < 0.05 or k > 20.0:
+        raise ValueError("缩放比例 x%.2f 太离谱，请检查单位 / 父子缩放" % k)
+
+    # 衣服是"标准件", 不能被人物带着一起缩放: 解除绑定并保住世界变换
+    detached = False
+    g_world = garment.matrix_world.copy()
+    if _is_under(garment, armature):
+        garment.parent = None
+        garment.matrix_world = g_world
+        detached = True
+    for m in list(garment.modifiers):
+        if m.type == "ARMATURE" and m.object is armature:
+            garment.modifiers.remove(m)
+            detached = True
+
+    body_follows = (_is_under(body, armature) or
+                    any(m.type == "ARMATURE" and m.object is armature for m in body.modifiers))
+    origin = cb if align else cg
+    S = (Matrix.Translation(Vector(pivot.tolist())) @ Matrix.Scale(k, 4) @
+         Matrix.Translation(Vector((-origin).tolist())))
+    armature.matrix_world = S @ armature.matrix_world
+    if not body_follows:            # 身体完全跟骨架无关时, 自己也跟着缩, 否则会脱节
+        body.matrix_world = S @ body.matrix_world
+    bpy.context.view_layer.update()
+    garment.matrix_world = g_world   # 衣服世界位置还原(不跟人物缩放)
+    return {"k": k, "k_nominal": k_nom, "capped": capped, "metric": metric,
+            "sleeves": len(limits), "detached": detached, "align": align}
 
 
 # 骨骼命名归一化: 支持 UE / Mixamo / Maya / Unity / 3ds Max 等常见写法
@@ -1134,6 +1364,66 @@ class GF_OT_match(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class GF_OT_scale_match(bpy.types.Operator):
+    """把人物或衣服整体统一缩放到对方尺寸(只改大小, 不改比例)"""
+    bl_idname = "garment_fit.scale_match"
+    bl_label = "尺寸匹配"
+    bl_description = "统一缩放：人物缩放到衣服尺寸，或衣服缩放到人物尺寸（护手: 袖口不盖手掌）"
+    bl_options = {"REGISTER", "UNDO"}
+
+    direction: bpy.props.EnumProperty(
+        name="方向",
+        items=[("BODY", "人物 → 衣服", "把人物(含骨架)缩放到衣服尺寸"),
+               ("GARMENT", "衣服 → 人物", "把衣服几何缩放到人物尺寸")],
+        default="BODY")
+
+    def execute(self, context):
+        st = context.scene.garment_fit
+        if not st.body or not st.garment:
+            self.report({"ERROR"}, "请先指定 人物身体 和 衣服")
+            return {"CANCELLED"}
+        if st.body == st.garment:
+            self.report({"ERROR"}, "身体和衣服不能是同一个物体")
+            return {"CANCELLED"}
+        if context.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+
+        arm = _arm(st.body, st.armature)
+        try:
+            if self.direction == "GARMENT":
+                res = scale_garment_to_body(st.body, st.garment, arm,
+                                            st.scale_metric, st.guard_cuff,
+                                            st.align_positions)
+                who = "衣服 → 人物"
+            else:
+                if arm is None:
+                    self.report({"ERROR"}, "找不到人物骨架，无法缩放人物")
+                    return {"CANCELLED"}
+                res = scale_body_to_garment(st.body, st.garment, arm,
+                                            st.scale_metric, st.guard_cuff,
+                                            st.align_positions)
+                who = "人物 → 衣服"
+        except ValueError as e:
+            self.report({"ERROR"}, str(e))
+            print("[GarmentFit] 尺寸匹配失败:", e)
+            return {"CANCELLED"}
+
+        msg = "%s x%.3f" % (who, res["k"])
+        if res.get("capped"):
+            msg += "（按基准应为 x%.3f，已限制为袖口不盖手掌）" % res["k_nominal"]
+        if res.get("align"):
+            msg += " · 中心已对齐"
+        if res.get("detached"):
+            msg += " · 已解除衣服绑定"
+        if res.get("shape_keys"):
+            msg += " · 含形态键只改了 Basis"
+        st.scale_info = msg
+        st.stage = "尺寸匹配: " + msg
+        self.report({"INFO"}, msg)
+        print("[GarmentFit] 尺寸匹配:", msg)
+        return {"FINISHED"}
+
+
 class GF_OT_pose_only(bpy.types.Operator):
     """只校正手臂姿态(需要已有权重)"""
     bl_idname = "garment_fit.arm_pose"
@@ -1394,6 +1684,19 @@ class GF_PT_panel(bpy.types.Panel):
         box.prop(st, "auto_scale")
 
         box = lay.box()
+        box.label(text="尺寸匹配 (统一缩放, 比例不变)", icon="FULLSCREEN_ENTER")
+        box.prop(st, "scale_metric", text="基准")
+        row = box.row(align=True)
+        op = row.operator("garment_fit.scale_match", text="人物 → 衣服")
+        op.direction = "BODY"
+        op = row.operator("garment_fit.scale_match", text="衣服 → 人物")
+        op.direction = "GARMENT"
+        box.prop(st, "guard_cuff")
+        box.prop(st, "align_positions")
+        if st.scale_info:
+            box.label(text=st.scale_info, icon="CHECKMARK")
+
+        box = lay.box()
         box.label(text="蒙皮", icon="ARMATURE_DATA")
         box.prop(st, "do_weights")
         col = box.column(align=True)
@@ -1465,7 +1768,8 @@ class GF_PT_panel(bpy.types.Panel):
         box.operator("garment_fit.export_fbx", icon="FILE_TICK")
 
 
-CLASSES = (GF_Settings, GF_OT_match, GF_OT_pose_only, GF_OT_weights_only,
+CLASSES = (GF_Settings, GF_OT_match, GF_OT_scale_match, GF_OT_pose_only,
+           GF_OT_weights_only,
            GF_OT_pick_body, GF_OT_pick_garment, GF_OT_export,
            GF_OT_cloth, GF_OT_restore, GF_OT_report, GF_PT_panel)
 
