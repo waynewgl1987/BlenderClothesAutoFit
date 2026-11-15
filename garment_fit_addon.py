@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 6, 0),
+    "version": (1, 6, 1),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -43,8 +43,10 @@ from mathutils.interpolate import poly_3d_calc
 
 # ================================================================== 进度
 class GF_Progress:
-    def __init__(self, total=100):
+    def __init__(self, total=100, title="处理"):
         self.total = total
+        self.title = title
+        self.pct = 0.0
         self.wm = bpy.context.window_manager
         try:
             self.wm.progress_begin(0, total)
@@ -58,10 +60,12 @@ class GF_Progress:
                 self.wm.progress_update(pct)
             except Exception:
                 pass
+        self.pct = pct / max(1, self.total)
         st = getattr(bpy.context.scene, "garment_fit", None)
         if st is not None:
-            st.progress = pct / max(1, self.total)
+            st.progress = self.pct
             st.stage = text
+        overlay_progress(self.pct, ("%s · %s" % (self.title, text)) if text else self.title)
         if text:
             print("[GarmentFit %3d%%] %s" % (pct, text))
 
@@ -71,6 +75,7 @@ class GF_Progress:
 
     def end(self, text="完成"):
         self.set(self.total, text)
+        overlay_progress(1.0, "%s · %s" % (self.title, text), hide_after=1.6)
         if self.wm:
             try:
                 self.wm.progress_end()
@@ -1420,12 +1425,12 @@ def export_fbx(meshes, armature, path, progress=None, p0=90, p1=100):
     return len(copies)
 
 
-# ================================================================== toast
-# 导出这类"跑完只会在状态栏闪一下"的操作, 在 3D 视图底部弹一条绿色提示, 几秒后自动消失。
-_toast_state = {"handler": None}
+# ================================================================== 覆盖层(toast / 进度条)
+# 3D 视图底部画一条覆盖层: 普通提示(toast)或执行中的进度条, 不打断操作。
+_ov = {"handler": None, "text": "", "pct": None, "last": 0.0}
 
 
-def _redraw_3d():
+def _redraw_3d(force=False):
     try:
         for wm in bpy.data.window_managers:
             for win in wm.windows:
@@ -1436,41 +1441,48 @@ def _redraw_3d():
                             area.tag_redraw()
     except Exception:
         pass
-
-
-def _toast_hide():
-    h = _toast_state.get("handler")
-    if h is not None:
+    if force and not bpy.app.background:
         try:
-            bpy.types.SpaceView3D.draw_handler_remove(h, "WINDOW")
-        except Exception as e:
-            print("[GarmentFit] toast remove:", e)
-        _toast_state["handler"] = None
-    _redraw_3d()
-    return None
+            bpy.ops.wm.redraw_timer(type="DRAW_WIN_SWAP", iterations=1)
+        except Exception:
+            pass
 
 
-def toast(text, seconds=5.0):
-    """在 3D 视图底部弹一条提示(不打断操作, seconds 秒后自动消失)"""
+def _ov_rect(x, y, w, h, color):
+    import gpu
+    from gpu_extras.batch import batch_for_shader
+    shader = gpu.shader.from_builtin("UNIFORM_COLOR")
+    batch = batch_for_shader(shader, "TRI_FAN",
+                             {"pos": [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]})
+    gpu.state.blend_set("ALPHA")
+    shader.bind()
+    shader.uniform_float("color", color)
+    batch.draw(shader)
+    gpu.state.blend_set("NONE")
+
+
+def _ov_draw():
     import blf
-
-    def draw():
+    try:
+        ctx = bpy.context
+        region = getattr(ctx, "region", None)
+        if region is None:
+            return
         try:
-            ctx = bpy.context
-            region = getattr(ctx, "region", None)
-            if region is None:
-                return
-            try:
-                scale = float(ctx.preferences.system.ui_scale)
-            except Exception:
-                scale = 1.0
+            scale = float(ctx.preferences.system.ui_scale)
+        except Exception:
+            scale = 1.0
+        f = 0
+        pct = _ov["pct"]
+        text = _ov["text"]
+
+        if pct is None:                      # 普通提示
             size = max(12, int(16 * scale))
-            f = 0
             try:
                 blf.size(f, size)
             except TypeError:
                 blf.size(f, size, 72)
-            tw, _th = blf.dimensions(f, text)
+            tw, _ = blf.dimensions(f, text)
             x = max(10.0, (region.width - tw) * 0.5)
             y = 44.0 * scale
             blf.color(f, 0.0, 0.0, 0.0, 0.9)
@@ -1479,17 +1491,82 @@ def toast(text, seconds=5.0):
             blf.color(f, 0.55, 1.0, 0.60, 1.0)
             blf.position(f, x, y, 0)
             blf.draw(f, text)
-        except Exception:
-            pass
+            return
 
-    _toast_hide()
+        w = min(560.0 * scale, region.width * 0.6)     # 进度条
+        h = 12.0 * scale
+        x = (region.width - w) * 0.5
+        y = 64.0 * scale
+        label = "%s   %d%%" % (text, int(round(pct * 100)))
+        size = max(12, int(15 * scale))
+        try:
+            blf.size(f, size)
+        except TypeError:
+            blf.size(f, size, 72)
+        tw, _ = blf.dimensions(f, label)
+        tx = max(10.0, (region.width - tw) * 0.5)
+        ty = y + h + 8 * scale
+        blf.color(f, 0.0, 0.0, 0.0, 0.9)
+        blf.position(f, tx + 2, ty - 2, 0)
+        blf.draw(f, label)
+        blf.color(f, 0.85, 0.95, 1.0, 1.0)
+        blf.position(f, tx, ty, 0)
+        blf.draw(f, label)
+        _ov_rect(x - 3 * scale, y - 3 * scale, w + 6 * scale, h + 6 * scale, (0.05, 0.06, 0.07, 0.85))
+        _ov_rect(x, y, w, h, (0.16, 0.18, 0.20, 0.95))
+        if pct > 0:
+            _ov_rect(x, y, max(2 * scale, w * pct), h, (0.30, 0.75, 0.40, 0.95))
+    except Exception:
+        pass
+
+
+def _ov_set(text, pct=None):
+    _ov["text"] = text
+    _ov["pct"] = pct
+    if _ov["handler"] is None:
+        try:
+            _ov["handler"] = bpy.types.SpaceView3D.draw_handler_add(
+                _ov_draw, (), "WINDOW", "POST_PIXEL")
+        except Exception as e:
+            print("[GarmentFit] overlay:", e)
+    _redraw_3d()
+
+
+def _ov_hide():
+    h = _ov["handler"]
+    if h is not None:
+        try:
+            bpy.types.SpaceView3D.draw_handler_remove(h, "WINDOW")
+        except Exception as e:
+            print("[GarmentFit] overlay remove:", e)
+        _ov["handler"] = None
+    _ov["pct"] = None
+    _redraw_3d()
+    return None
+
+
+def toast(text, seconds=5.0):
+    """在 3D 视图底部弹一条提示(不打断操作, seconds 秒后自动消失)"""
+    _ov_set(text, None)
     try:
-        _toast_state["handler"] = bpy.types.SpaceView3D.draw_handler_add(
-            draw, (), "WINDOW", "POST_PIXEL")
-        bpy.app.timers.register(_toast_hide, first_interval=max(0.5, float(seconds)))
+        bpy.app.timers.register(_ov_hide, first_interval=max(0.5, float(seconds)))
     except Exception as e:
         print("[GarmentFit] toast:", e)
-    _redraw_3d()
+
+
+def overlay_progress(pct, text="", hide_after=None):
+    """在 3D 视图底部画执行中的进度条(节流刷新, 不拖慢主任务)"""
+    import time
+    _ov_set(text, max(0.0, min(1.0, float(pct))))
+    now = time.time()
+    if now - _ov["last"] > 0.25:
+        _ov["last"] = now
+        _redraw_3d(force=True)
+    if hide_after:
+        try:
+            bpy.app.timers.register(_ov_hide, first_interval=float(hide_after))
+        except Exception:
+            pass
 
 
 # ================================================================== 操作符
@@ -1518,7 +1595,7 @@ def run_match(context, op, skip_arm=False):
 
     # ============ 模式二: 人物匹配衣服 ============
     if st.match_mode == "BODY":
-        pr = GF_Progress(100)
+        pr = GF_Progress(100, "人物匹配衣服")
         try:
             # 先把衣服从骨架上摘下来并保住世界变换, 否则缩放人物时衣服会一起缩,
             # 两边同比缩放等于没匹配
@@ -1554,11 +1631,13 @@ def run_match(context, op, skip_arm=False):
                     pr.wm.progress_end()
                 except Exception:
                     pass
+            if pr.pct < 0.999:
+                _ov_hide()
         return {"FINISHED"}
 
     # ============ 模式一(默认): 衣服匹配人物 ============
     _save_orig(st.garment)
-    pr = GF_Progress(100)
+    pr = GF_Progress(100, "一键匹配" if not skip_arm else "一键匹配(大袖/垂袖)")
     try:
         if st.do_weights:
             pr.step(2, "传递权重")
@@ -1584,6 +1663,8 @@ def run_match(context, op, skip_arm=False):
                 pr.wm.progress_end()
             except Exception:
                 pass
+        if pr.pct < 0.999:
+            _ov_hide()
     return {"FINISHED"}
 
 
@@ -1829,7 +1910,7 @@ class GF_OT_export(bpy.types.Operator):
             self.report({"ERROR"}, "当前导出范围里没有网格")
             return {"CANCELLED"}
 
-        pr = GF_Progress(100)
+        pr = GF_Progress(100, "导出 FBX")
         exported = []
         try:
             sim = None

@@ -112,6 +112,7 @@ Blender 的布料解算器**不能**导出到 UE。这一步是把网格准备�
 2. 选中衣服 mesh → 点「衣服」旁边的吸管；
 3. 保持 **匹配方向 = 衣服匹配人物**；
 4. 点 **「一键匹配（姿态+蒙皮）」**（620k 顶点约 12~20 s，状态栏有进度条和百分比）；大袖/垂袖款改用下面的 **「一键匹配（大袖/垂袖）」**
+   —— 执行期间 3D 视图底部会显示**绿色进度条**（百分比 + 当前阶段，如"一键匹配 · 手臂姿态校正"），跑完自动消失
 5. 看正 / 侧 / 3-4 视角。袖子还松就调大「最大旋转角度」或「小臂强度」，再点 **「仅校正手臂姿态」**（不动权重）；
 6. （可选）需要 UE 布料就点 **「布料优化」**；
 7. 选导出范围 → 点 **「导出 FBX」**。
@@ -304,7 +305,7 @@ Requirements: Blender **4.2+** (tested on 5.1), NumPy (bundled). No dependencies
 1. Select the character body mesh → click the **eyedropper** next to *Body* (the armature is detected automatically);
 2. Select the garment mesh → click the eyedropper next to *Garment*;
 3. Keep **Match direction = Garment → Character**;
-4. Click **One-click match (pose + skin)** — ~12–20 s for a 600k-vertex garment, with a progress bar;
+4. Click **One-click match (pose + skin)** — ~12–20 s for a 600k-vertex garment; a **green progress bar** (percentage + current stage) is drawn at the bottom of the 3D view while it runs and disappears when done;
 5. Review front / side / 3-4 views. If the sleeves are still loose, raise **Max rotation** or **Forearm strength**, then press **Correct arm pose only** (does not touch weights);
 6. *(Optional)* Click **Cloth prep** if you want cloth simulation in UE;
 7. Choose the export scope and click **Export FBX**.
