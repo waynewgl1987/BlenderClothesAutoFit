@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 10, 2),
+    "version": (1, 10, 3),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -117,9 +117,9 @@ class GF_Settings(bpy.types.PropertyGroup):
     trim_feet: bpy.props.BoolProperty(name="脚(脚踝/脚趾)", default=True)
     trim_head: bpy.props.BoolProperty(name="头/脖子", default=False)
     trim_margin: bpy.props.FloatProperty(name="判定距离(mm)", default=10.0, min=1.0, max=100.0, precision=0)
-    trim_cut: bpy.props.BoolProperty(name="切断腕/踝以外(袖口/裤脚)", default=False,
-                                     description="危险: 会把袖口以外的衣服布料一起切掉。只有确认衣服里长着"
-                                                 "多余的手/脚时才开，并把切断半径调小(5~8cm)")
+    trim_cut: bpy.props.BoolProperty(name="切断腕/踝以外(袖口/裤脚)", default=True,
+                                     description="以人物的腕/踝为界，把关节以外、半径内的衣服几何整段切掉"
+                                                 "（v1.4.3 的默认行为：这样才会把长出来的手/脚一起删掉）")
     trim_small_v: bpy.props.IntProperty(name="碎块最大顶点数", default=3000, min=50, max=200000,
                                         description="把独立碎块(与主体不相连)中顶点数小于这个值的小块删掉；"
                                                     "衣服上多出来的人体零件通常就是这种小块")
@@ -669,8 +669,8 @@ def trim_body_parts(garment, body, armature=None, hands=True, feet=True, head=Fa
     bm.verts.ensure_lookup_table()
     doomed = [f for f in bm.faces if any(mask[v.index] for v in f.verts)]
     nf, nv = len(doomed), int(mask.sum())
-    # 安全阀: 一次删掉超过 10% 的网格说明判定过宽(会把衣服本身切掉) -> 拒绝执行
-    if nv > max(2000, int(n * 0.10)):
+    # 安全阀: 一次删掉超过 30% 的网格说明判定离谱(会把整件衣服切掉) -> 拒绝执行
+    if nv > max(2000, int(n * 0.30)):
         bm.free()
         raise ValueError("这次判定会删掉 %d 个顶点(%.1f%%)，太多了，可能会把衣服本身切坏。"
                          "请把「切断半径」调小，或关闭「切断腕/踝以外」只删重合层。"
