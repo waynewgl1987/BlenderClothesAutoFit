@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 10, 0),
+    "version": (1, 10, 1),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -639,9 +639,15 @@ def trim_body_parts(garment, body, armature=None, hands=True, feet=True, head=Fa
         for i in range(len(P)):
             kd.insert(Vector(P[i].tolist()), i)
         kd.balance()
+        nearest = None
         for i in range(n):
             _, _, dist = kd.find(Vector(W[i].astype(float).tolist()))
+            if nearest is None or dist < nearest:
+                nearest = float(dist)
             mask[i] = dist < margin
+        nearest_mm = (nearest or 0.0) * 1000.0
+    else:
+        nearest_mm = None
 
     for nm, o, d, rk in gates:
         rel = W - o
@@ -676,7 +682,8 @@ def trim_body_parts(garment, body, armature=None, hands=True, feet=True, head=Fa
     bm.free()
     return {"faces": nf, "verts": nv, "parts": used, "missing": missing,
             "gates": len(gates), "margin": margin, "cut_radius": cut_radius,
-            "cut_len": cut_len, "left_faces": len(me.polygons)}
+            "cut_len": cut_len, "left_faces": len(me.polygons),
+            "nearest_mm": nearest_mm if pts else None}
 
 
 # 骨骼命名归一化: 支持 UE / Mixamo / Maya / Unity / 3ds Max 等常见写法
@@ -2078,6 +2085,35 @@ class GF_OT_shrink_sleeves(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class GF_OT_delete_selected(bpy.types.Operator):
+    """删除衣服上选中的多余部位（编辑模式里选好顶点，再点这个）"""
+    bl_idname = "garment_fit.delete_selected"
+    bl_label = "删除选中的多余部位"
+    bl_description = "在编辑模式里选中衣服上多余的人体零件（手/脚等），点这个把选中的顶点/面删掉"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        st = context.scene.garment_fit
+        g = context.object if context.mode == "EDIT" else st.garment
+        if context.mode != "EDIT" or g is None or g.type != "MESH":
+            self.report({"ERROR"}, "请先选中衣服 → 进入编辑模式 → 选中要删除的顶点")
+            return {"CANCELLED"}
+        import bmesh
+        bm = bmesh.from_edit_mesh(g.data)
+        sel = [v for v in bm.verts if v.select]
+        if not sel:
+            self.report({"ERROR"}, "编辑模式里没有选中的顶点")
+            return {"CANCELLED"}
+        n = len(sel)
+        bmesh.ops.delete(bm, geom=sel, context="VERTS")
+        bmesh.update_edit_mesh(g.data)
+        msg = "已删除选中的 %d 个顶点（剩余 %d）" % (n, len(g.data.vertices))
+        self.report({"INFO"}, msg)
+        print("[GarmentFit]", msg)
+        toast(msg, 4.0)
+        return {"FINISHED"}
+
+
 class GF_OT_scale_match(bpy.types.Operator):
     """把人物或衣服整体统一缩放到对方尺寸(只改大小, 不改比例)"""
     bl_idname = "garment_fit.scale_match"
@@ -2193,8 +2229,11 @@ class GF_OT_trim_body(bpy.types.Operator):
                 _ov_hide()
 
         if res["faces"] == 0:
-            msg = "没找到与人物重合的部位（容差 %.0f mm）" % (res["margin"] * 1000.0)
-            if res["gates"] == 0:
+            msg = "没找到与人物重合的部位（容差 %.0f mm，最近距离见下）" % (res["margin"] * 1000.0)
+            if res.get("nearest_mm") is not None:
+                msg = "没找到比 %.0f mm 更近的重合部位（最近距离 %.1f mm）" % (
+                    res["margin"] * 1000.0, res["nearest_mm"])
+            if res["gates"] == 0 and st.trim_cut:
                 msg += " · 没找到骨架的腕/踝关节"
         else:
             msg = "删除 %d 面，剩 %d 面（容差 %.0f mm，切断半径 %.0f cm）" % (
@@ -2567,6 +2606,8 @@ class GF_PT_panel(bpy.types.Panel):
                      text="布料优化 (焊接+遮罩+低模)")
         box.operator("garment_fit.shrink_sleeves", icon="MOD_SHRINKWRAP",
                      text="袖子贴合手臂 (Shrinkwrap)")
+        box.operator("garment_fit.delete_selected", icon="X",
+                     text="删除选中的多余部位 (编辑模式)")
         if st.trim_info:
             box.label(text=st.trim_info, icon="INFO")
 
@@ -2742,7 +2783,7 @@ class GF_PT_export(bpy.types.Panel):
 
 
 CLASSES = (GF_Settings, GF_OT_match, GF_OT_match_loose, GF_OT_scale_match, GF_OT_trim_body,
-           GF_OT_shrink_sleeves,
+           GF_OT_shrink_sleeves, GF_OT_delete_selected,
            GF_OT_pose_only, GF_OT_weights_only,
            GF_OT_pick_body, GF_OT_pick_garment, GF_OT_export,
            GF_OT_cloth, GF_OT_restore, GF_OT_report, GF_OT_recenter,
