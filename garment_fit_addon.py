@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 8, 3),
+    "version": (1, 9, 0),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -1454,8 +1454,6 @@ def snap_cuffs_to_arms(garment, armature, strength=1.0, max_move=0.15, tighten=0
         f = np.clip((t - t0) / (t1 - t0), 0.0, 1.0)
         f = f * f * (3.0 - 2.0 * f)                       # smoothstep
         f *= np.clip((FS["lowerarm_" + side][sel] - 0.15) / 0.5, 0.0, 1.0)
-        # 远端整段按"刚体平移"处理: 只在小臂近端做过渡, 袖口形状一点不变
-        f = np.maximum(f, np.clip((t - (t0 + 0.35 * (t1 - t0))) / 0.05, 0.0, 1.0))
         disp[sel] += f[:, None] * delta
 
         if tighten > 1e-4:
@@ -1839,7 +1837,14 @@ def run_match(context, op, loose_sleeve=False):
             fix_arm_pose(st.garment, st.body, arm, st.arm_max_rot, st.arm_strength,
                          st.arm_max_move / 100.0, st.arm_iterations,
                          st.arm_rigid_chunks, st.arm_str_up, st.arm_str_lo,
-                         st.weight_smooth, st.arm_str_cl, pr, 30, 50)
+                         st.weight_smooth, st.arm_str_cl, pr, 30, 45)
+        if st.do_arm_pose and loose_sleeve:
+            # 大袖/垂袖: 不做骨骼旋转, 只把袖口沿手臂平滑拉到手腕(布料会被拉伸, 但袖口拓扑完整)
+            pr.step(46, "袖口拉到手腕")
+            try:
+                snap_cuffs_to_arms(st.garment, arm, 1.0, 0.15, 0.0, pr, 46, 50)
+            except Exception as e:
+                print("[GarmentFit] 袖口吸附失败:", e)
         moved = 0
         if st.do_fit:
             pr.step(50, "防穿模")
