@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 5, 2),
+    "version": (1, 5, 3),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -1465,6 +1465,78 @@ def export_fbx(meshes, armature, path, progress=None, p0=90, p1=100):
     return len(copies)
 
 
+# ================================================================== toast
+# 导出这类"跑完只会在状态栏闪一下"的操作, 在 3D 视图底部弹一条绿色提示, 几秒后自动消失。
+_toast_state = {"handler": None}
+
+
+def _redraw_3d():
+    try:
+        for wm in bpy.data.window_managers:
+            for win in wm.windows:
+                scr = win.screen
+                if scr:
+                    for area in scr.areas:
+                        if area.type == "VIEW_3D":
+                            area.tag_redraw()
+    except Exception:
+        pass
+
+
+def _toast_hide():
+    h = _toast_state.get("handler")
+    if h is not None:
+        try:
+            bpy.types.SpaceView3D.draw_handler_remove(h, "WINDOW")
+        except Exception as e:
+            print("[GarmentFit] toast remove:", e)
+        _toast_state["handler"] = None
+    _redraw_3d()
+    return None
+
+
+def toast(text, seconds=5.0):
+    """在 3D 视图底部弹一条提示(不打断操作, seconds 秒后自动消失)"""
+    import blf
+
+    def draw():
+        try:
+            ctx = bpy.context
+            region = getattr(ctx, "region", None)
+            if region is None:
+                return
+            try:
+                scale = float(ctx.preferences.system.ui_scale)
+            except Exception:
+                scale = 1.0
+            size = max(12, int(16 * scale))
+            f = 0
+            try:
+                blf.size(f, size)
+            except TypeError:
+                blf.size(f, size, 72)
+            tw, _th = blf.dimensions(f, text)
+            x = max(10.0, (region.width - tw) * 0.5)
+            y = 44.0 * scale
+            blf.color(f, 0.0, 0.0, 0.0, 0.9)
+            blf.position(f, x + 2, y - 2, 0)
+            blf.draw(f, text)
+            blf.color(f, 0.55, 1.0, 0.60, 1.0)
+            blf.position(f, x, y, 0)
+            blf.draw(f, text)
+        except Exception:
+            pass
+
+    _toast_hide()
+    try:
+        _toast_state["handler"] = bpy.types.SpaceView3D.draw_handler_add(
+            draw, (), "WINDOW", "POST_PIXEL")
+        bpy.app.timers.register(_toast_hide, first_interval=max(0.5, float(seconds)))
+    except Exception as e:
+        print("[GarmentFit] toast:", e)
+    _redraw_3d()
+
+
 # ================================================================== 操作符
 class GF_OT_match(bpy.types.Operator):
     """一键: 权重 + 手臂姿态校正 + 防穿模 + 绑定"""
@@ -1823,6 +1895,13 @@ class GF_OT_export(bpy.types.Operator):
         for count, path in exported:
             self.report({"INFO"}, "已导出 %d 个网格 -> %s" % (count, bpy.path.abspath(path)))
             print("[GarmentFit] exported", count, "meshes ->", bpy.path.abspath(path))
+
+        try:
+            names = ", ".join(bpy.path.basename(bpy.path.abspath(p)) for _, p in exported)
+            total = sum(n for n, _ in exported)
+            toast("导出成功: %s (%d 个网格)" % (names, total), 6.0)
+        except Exception as e:
+            print("[GarmentFit] toast export:", e)
         return {"FINISHED"}
 
 

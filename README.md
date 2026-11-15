@@ -84,7 +84,8 @@ Blender 的布料解算器**不能**导出到 UE。这一步是把网格准备�
 
 - **只衣服 / 只人物 / 两个一起**，始终带骨架；
 - 可选**带上 Sim 网格**；
-- 把场景缩放（比如 0.01）烘进顶点和骨骼 → UE 里 1:1 米制、`scale = 1`。
+- 把场景缩放（比如 0.01）烘进顶点和骨骼 → UE 里 1:1 米制、`scale = 1`；
+- **导出成功会在 3D 视图底部弹一条绿色提示**（文件名 + 网格数），6 秒后自动消失，不用再盯状态栏。
 
 **7. 安全保护**
 
@@ -280,7 +281,8 @@ Measured on a 622k-vertex garment: shells 595 → 1, verts 622,715 → 593,924, 
 
 - **Garment only / Character only / Both**, always with the skeleton;
 - optional **Sim mesh**;
-- bakes the scene scale (e.g. 0.01) into vertices and bones → clean 1:1 metric FBX, `scale = 1` in UE.
+- bakes the scene scale (e.g. 0.01) into vertices and bones → clean 1:1 metric FBX, `scale = 1` in UE;
+- **a green toast pops up at the bottom of the 3D view when the export succeeds** (file name + mesh count), fades after 6 s.
 
 **7. Safety rails**
 
