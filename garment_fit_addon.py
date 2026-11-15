@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 9, 3),
+    "version": (1, 9, 4),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -1309,6 +1309,76 @@ def fix_arm_pose(garment, body, armature, max_rot=10.0, strength=1.0,
     return max(1, iterations)
 
 
+def align_sleeve_to_arm(garment, armature, max_deg=70.0, progress=None, p0=32, p1=46):
+    """把整只袖子**作为刚体**转到人物手臂的"位置+方向"上, 让手落在袖口里。
+
+    - 旋转: 衣服袖子自己的轴(肩端->袖口) 对齐 人体 肩->腕 的轴;
+    - 平移: 袖口环中心 对准 腕点;
+    - 两者都用同一个权重场施加, 袖子内部的顶点位移相同 => 袖口形状刚性保持, 不会被揉;
+      只有肩部一圈过渡带会被拉扯(被衣服挡住, 看不见)。
+    """
+    FW = _fam_weights(garment)
+    W = _wverts(garment).astype(np.float64)
+    FS = _smooth_fam(FW, W, 0.02, 2)
+    bones = _find_arm_bones(armature)
+    mw = armature.matrix_world
+    disp = np.zeros_like(W)
+    done, infos = 0, {}
+    for side in ("l", "r"):
+        bu, bl, bh = (bones.get("upperarm_" + side), bones.get("lowerarm_" + side),
+                      bones.get("hand_" + side))
+        if not bu or not bl:
+            continue
+        sh = np.array(mw @ armature.pose.bones[bu].head, float)
+        el = np.array(mw @ armature.pose.bones[bl].head, float)
+        wr = np.array(mw @ armature.pose.bones[bh].head, float) if bh \
+            else np.array(mw @ armature.pose.bones[bl].tail, float)
+
+        w = np.clip(FS["upperarm_" + side] + FS["lowerarm_" + side], 0.0, 1.0)
+        sel = w > 0.2
+        if int(sel.sum()) < 300:
+            continue
+        A = W[sel]
+        d_arm = wr - sh
+        La = float(np.linalg.norm(d_arm))
+        if La < 1e-6:
+            continue
+        d_arm /= La
+        t = (A - sh) @ d_arm
+        near = A[t <= np.percentile(t, 20)].mean(0)
+        far = A[t >= np.percentile(t, 85)].mean(0)
+        ax = far - near
+        lx = float(np.linalg.norm(ax))
+        if lx < 1e-5:
+            continue
+        ax /= lx
+        ang = math.degrees(math.acos(float(np.clip(ax @ d_arm, -1.0, 1.0))))
+        axis = np.cross(ax, d_arm)
+        if np.linalg.norm(axis) < 1e-6:
+            continue
+        ang_c = min(ang, max_deg)
+        R = _rodrigues(axis / np.linalg.norm(axis), math.radians(ang_c))
+        # 旋转后的袖口中心 -> 腕点
+        cuff = A[t >= np.percentile(t, 88)]
+        cuff_c = cuff.mean(0)
+        target = (R @ (cuff_c - sh)) + sh
+        delta = wr - target
+        dl = float(np.linalg.norm(delta))
+        if dl > 0.30:
+            delta *= 0.30 / dl
+        f = np.clip((w[sel] - 0.25) / 0.45, 0.0, 1.0)
+        f = f * f * (3.0 - 2.0 * f)
+        moved = ((A - sh) @ R.T) + sh + delta
+        disp[sel] += f[:, None] * (moved - A)
+        infos[side] = (ang, ang_c, dl)
+        done += 1
+        if progress:
+            progress.step(p0 + (p1 - p0) * done // 2, "袖子对齐手臂 %s (%.0f°)" % (side, ang_c))
+    if done:
+        _set_wverts(garment, W + disp)
+    return {"sides": done, "info": infos}
+
+
 def translate_sleeves_rigid(garment, armature, max_move=0.08):
     """大袖专用: 把袖子整体**刚性平移**到人物手腕(不旋转、不收窄, 局部形状完全不变)。"""
     FW = _fam_weights(garment)
@@ -1836,12 +1906,19 @@ def run_match(context, op, loose_sleeve=False):
         if st.do_weights:
             pr.step(2, "传递权重")
             transfer_weights(st.garment, st.body, st.limit_weights, pr, 2, 30)
-        if st.do_arm_pose:
+        if st.do_arm_pose and not loose_sleeve:
             pr.step(32, "手臂姿态校正")
             fix_arm_pose(st.garment, st.body, arm, st.arm_max_rot, st.arm_strength,
                          st.arm_max_move / 100.0, st.arm_iterations,
                          st.arm_rigid_chunks, st.arm_str_up, st.arm_str_lo,
                          st.weight_smooth, st.arm_str_cl, pr, 30, 50)
+        if st.do_arm_pose and loose_sleeve:
+            # 大袖/垂袖: 整只袖子刚体对齐到手臂"位置+方向", 手落在袖口里
+            pr.step(32, "袖子对齐手臂")
+            try:
+                align_sleeve_to_arm(st.garment, arm, 70.0, pr, 32, 50)
+            except Exception as e:
+                print("[GarmentFit] 大袖对齐失败:", e)
         moved = 0
         if st.do_fit:
             pr.step(50, "防穿模")
