@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 7, 7),
+    "version": (1, 8, 1),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -1305,6 +1305,46 @@ def fix_arm_pose(garment, body, armature, max_rot=10.0, strength=1.0,
     return max(1, iterations)
 
 
+def translate_sleeves_rigid(garment, armature, max_move=0.08):
+    """大袖专用: 把袖子整体**刚性平移**到人物手腕(不旋转、不收窄, 局部形状完全不变)。"""
+    FW = _fam_weights(garment)
+    W = _wverts(garment).astype(np.float64)
+    FS = _smooth_fam(FW, W, 0.02, 2)
+    bones = _find_arm_bones(armature)
+    mw = armature.matrix_world
+    disp = np.zeros_like(W)
+    for side in ("l", "r"):
+        hb = bones.get("lowerarm_" + side)
+        hd = bones.get("hand_" + side)
+        if not hb or not hd:
+            continue
+        el = np.array(mw @ armature.pose.bones[hb].head, float)
+        wr = np.array(mw @ armature.pose.bones[hd].head, float)
+        d = wr - el
+        L = float(np.linalg.norm(d))
+        if L < 1e-6:
+            continue
+        d /= L
+        w = np.clip(FS["upperarm_" + side] + FS["lowerarm_" + side], 0.0, 1.0)
+        sel = w > 0.35
+        if int(sel.sum()) < 300:
+            continue
+        A = W[sel]
+        t = (A - el) @ d
+        cuff = A[t >= np.percentile(t, 90)]
+        delta = wr - cuff.mean(0)
+        dl = float(np.linalg.norm(delta))
+        if dl < 0.005:
+            continue
+        if dl > max_move:
+            delta *= max_move / dl
+        f = np.clip((w[sel] - 0.35) / 0.2, 0.0, 1.0)
+        f = f * f * (3.0 - 2.0 * f)
+        disp[sel] += f[:, None] * delta
+    _set_wverts(garment, W + disp)
+    return disp
+
+
 # ================================================================== 大袖: 袖口吸附
 def align_sleeves_rigid(garment, armature, strength=1.0, max_deg=55.0,
                         progress=None, p0=32, p1=46):
@@ -1717,8 +1757,13 @@ def overlay_progress(pct, text="", hide_after=None):
 
 
 # ================================================================== 操作符
-def run_match(context, op, skip_arm=False):
-    """一键匹配的公共实现。skip_arm=True 时跳过手臂姿态校正(大袖/垂袖)。"""
+def run_match(context, op, loose_sleeve=False):
+    """一键匹配的公共实现。
+
+    loose_sleeve=False: 原来的"一键匹配（姿态+蒙皮）", 逻辑完全不变。
+    loose_sleeve=True : "一键匹配（大袖/垂袖）", 在同一套流程之后**多加一步**袖口整体平移,
+                        只作用于低权重过渡带以外的袖子, 且上限 8 cm, 不旋转、不带收窄。
+    """
     st = context.scene.garment_fit
     if not st.garment or not st.body:
         op.report({"ERROR"}, "请先指定 人物身体 和 衣服")
@@ -1784,7 +1829,7 @@ def run_match(context, op, skip_arm=False):
 
     # ============ 模式一(默认): 衣服匹配人物 ============
     _save_orig(st.garment)
-    pr = GF_Progress(100, "一键匹配" if not skip_arm else "一键匹配(大袖/垂袖)")
+    pr = GF_Progress(100, "一键匹配" if not loose_sleeve else "一键匹配(大袖/垂袖)")
     try:
         if st.do_weights:
             pr.step(2, "传递权重")
@@ -1822,7 +1867,17 @@ class GF_OT_match(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        return run_match(context, self, skip_arm=False)
+        return run_match(context, self, loose_sleeve=False)
+
+
+class GF_OT_match_loose(bpy.types.Operator):
+    """大袖/垂袖: 在原一键匹配之后, 额外把袖口整段平移到人物手腕(不旋转、不收窄, 袖口形状不变)"""
+    bl_idname = "garment_fit.match_loose"
+    bl_label = "一键匹配 (大袖/垂袖)"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        return run_match(context, self, loose_sleeve=True)
 
 
 class GF_OT_scale_match(bpy.types.Operator):
@@ -2281,6 +2336,9 @@ class GF_PT_panel(bpy.types.Panel):
         box.row(align=True).prop(st, "match_mode", expand=True)
         lay.scale_y = 1.5
         lay.operator("garment_fit.match", icon="MOD_ARMATURE")
+        lay.scale_y = 1.2
+        lay.operator("garment_fit.match_loose", icon="MOD_CLOTH",
+                     text="一键匹配 (大袖/垂袖)")
         lay.scale_y = 1.0
         row = lay.row(align=True)
         row.operator("garment_fit.arm_pose", icon="FILE_REFRESH")
@@ -2483,7 +2541,7 @@ class GF_PT_export(bpy.types.Panel):
         lay.prop(st, "export_path", text="")
 
 
-CLASSES = (GF_Settings, GF_OT_match, GF_OT_scale_match, GF_OT_trim_body,
+CLASSES = (GF_Settings, GF_OT_match, GF_OT_match_loose, GF_OT_scale_match, GF_OT_trim_body,
            GF_OT_pose_only, GF_OT_weights_only,
            GF_OT_pick_body, GF_OT_pick_garment, GF_OT_export,
            GF_OT_cloth, GF_OT_restore, GF_OT_report, GF_OT_recenter,
