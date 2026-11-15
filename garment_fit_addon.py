@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 9, 0),
+    "version": (1, 9, 1),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -131,6 +131,10 @@ class GF_Settings(bpy.types.PropertyGroup):
     arm_max_move: bpy.props.FloatProperty(name="最大位移(cm)", default=5.0, min=0.0, max=15.0)
     arm_iterations: bpy.props.IntProperty(name="迭代次数", default=2, min=1, max=5)
     arm_rigid_chunks: bpy.props.BoolProperty(name="按碎块刚性（无裂缝但会拉开薄片）", default=False)
+    cuff_pull_cm: bpy.props.FloatProperty(
+        name="袖口拉向手腕(cm)", default=0.0, min=0.0, max=20.0, precision=1,
+        description="只对「一键匹配（大袖/垂袖）」生效：0 = 不碰袖子（和原版一致）；"
+                    "调大就把袖口平滑拉向手腕，布料会被拉伸")
     cuff_tighten: bpy.props.FloatProperty(
         name="袖口收紧(大袖)", default=0.0, min=0.0, max=1.0, precision=2,
         description="默认 0 = 完全不改袖口形状；只有当前臂从宽袖口里露出来时才往上调（会改变袖口形状）")
@@ -1838,11 +1842,11 @@ def run_match(context, op, loose_sleeve=False):
                          st.arm_max_move / 100.0, st.arm_iterations,
                          st.arm_rigid_chunks, st.arm_str_up, st.arm_str_lo,
                          st.weight_smooth, st.arm_str_cl, pr, 30, 45)
-        if st.do_arm_pose and loose_sleeve:
+        if st.do_arm_pose and loose_sleeve and st.cuff_pull_cm > 0.05:
             # 大袖/垂袖: 不做骨骼旋转, 只把袖口沿手臂平滑拉到手腕(布料会被拉伸, 但袖口拓扑完整)
             pr.step(46, "袖口拉到手腕")
             try:
-                snap_cuffs_to_arms(st.garment, arm, 1.0, 0.15, 0.0, pr, 46, 50)
+                snap_cuffs_to_arms(st.garment, arm, 1.0, st.cuff_pull_cm / 100.0, 0.0, pr, 46, 50)
             except Exception as e:
                 print("[GarmentFit] 袖口吸附失败:", e)
         moved = 0
@@ -2436,6 +2440,7 @@ class GF_PT_arm(bpy.types.Panel):
         col.prop(st, "arm_str_lo")
         col.prop(st, "arm_iterations")
         col.prop(st, "arm_rigid_chunks")
+        col.prop(st, "cuff_pull_cm")
 
 
 class GF_PT_fit(bpy.types.Panel):
