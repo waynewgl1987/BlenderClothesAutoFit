@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 5, 0),
+    "version": (1, 5, 1),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -126,6 +126,12 @@ class GF_Settings(bpy.types.PropertyGroup):
     arm_max_move: bpy.props.FloatProperty(name="最大位移(cm)", default=5.0, min=0.0, max=15.0)
     arm_iterations: bpy.props.IntProperty(name="迭代次数", default=2, min=1, max=5)
     arm_rigid_chunks: bpy.props.BoolProperty(name="按碎块刚性（无裂缝但会拉开薄片）", default=False)
+    arm_loose: bpy.props.BoolProperty(
+        name="宽袖保护（大袖不跟甩）", default=True,
+        description="只用贴着骨骼的核心布料估算旋转方向；宽松大袖/喇叭袖不会被转到错误方向")
+    arm_loose_fade: bpy.props.BoolProperty(
+        name="袖摆按距离衰减（会拉伸布料）", default=False,
+        description="离手臂越远的袖摆受力越小。更自然但会把布料拉开，只在袖摆被甩飞时开")
 
     do_fit: bpy.props.BoolProperty(name="防穿模(推出穿插)", default=True)
     fit_gap: bpy.props.FloatProperty(name="布料间隙", default=0.008, min=0.0, max=0.05,
@@ -1208,8 +1214,14 @@ def transfer_weights(garment, body, limit=4, progress=None, p0=2, p1=30):
 def fix_arm_pose(garment, body, armature, max_rot=10.0, strength=1.0,
                  max_move=0.05, iterations=2, rigid_chunks=False,
                  str_up=0.95, str_lo=0.7, smooth_it=2, str_cl=0.3,
-                 progress=None, p0=30, p1=50):
-    """把衣服手臂按骨骼对齐到人物手臂(权重场平滑驱动, 不撕裂)"""
+                 progress=None, p0=30, p1=50, loose_guard=True, loose_fade=False):
+    """把衣服手臂按骨骼对齐到人物手臂(权重场平滑驱动, 不撕裂)
+
+    loose_guard: 大袖/宽袖保护。只用"贴着骨骼的核心布料"估算旋转轴向,
+                 不然垂下来的大袖摆会把 PCA 拉偏, 整只袖子被转到错误方向。
+    loose_fade:  离骨骼轴越远的袖摆, 受力越小(默认关: 会拉长布料; 只在袖摆
+                 明显被甩飞时才开)。
+    """
     bv, polys, tree = _body_tree(body)
     gn = {g.index: g.name for g in body.vertex_groups}
     dom = np.array([gn[max(v.groups, key=lambda x: x.weight).group] if v.groups else ""
@@ -1236,8 +1248,8 @@ def fix_arm_pose(garment, body, armature, max_rot=10.0, strength=1.0,
         dref["upperarm_" + s] = el - sh
         dref["lowerarm_" + s] = (wr - el) if wr is not None else (el - sh)
 
-    sig = "%s|%s|%s|%s|%s|%s|%s" % (max_rot, strength, max_move, iterations,
-                                     str_cl, str_up, str_lo)
+    sig = "%s|%s|%s|%s|%s|%s|%s|%s|%s" % (max_rot, strength, max_move, iterations,
+                                          str_cl, str_up, str_lo, loose_guard, loose_fade)
     if garment.get("gf_armpose_sig") == sig:
         if progress:
             progress.step(p1, "已做过手臂姿态校正，跳过(重复执行会叠加变形)")
@@ -1257,8 +1269,21 @@ def fix_arm_pose(garment, body, armature, max_rot=10.0, strength=1.0,
             if gm.sum() < 200 or bmask.sum() < 80:
                 continue
             A, B = W[gm], bv[bmask]
+            A_full = A
+            h = piv[k]
+            dvec = dref[k]
+            Lb = float(np.linalg.norm(dvec))
+            d0 = dvec / max(Lb, 1e-9)
+            # 大袖: 只用"贴着骨骼的核心布料"估轴向, 否则下垂的大片布料会把 PCA 拉偏
+            guard = bool(loose_guard) and part != "clavicle" and Lb > 1e-6
+            if guard:
+                rel = A - h
+                tp = rel @ d0
+                radA = np.linalg.norm(rel - np.outer(tp, d0), axis=1)
+                core = radA < max(0.05, 0.32 * Lb)
+                if int(core.sum()) >= 200:
+                    A = A[core]
             axg, axb = _pca_axis(A), _pca_axis(B)
-            d0 = dref[k] / max(np.linalg.norm(dref[k]), 1e-9)
             if axg @ d0 < 0:
                 axg = -axg
             if axb @ d0 < 0:
@@ -1267,17 +1292,32 @@ def fix_arm_pose(garment, body, armature, max_rot=10.0, strength=1.0,
             v = axb / np.linalg.norm(axb)
             ang = math.degrees(math.acos(float(np.clip(u @ v, -1, 1))))
             axis = np.cross(u, v)
+            ang_eff = min(ang, max_rot)
+            if guard:
+                # 袖子越"肥"(布料离骨骼越远), 越不该硬转: 转了就会把大袖摆折出硬褶
+                rel0 = A_full - h
+                rad0 = np.linalg.norm(rel0 - np.outer(rel0 @ d0, d0), axis=1)
+                spread = float(np.percentile(rad0, 90))
+                ang_eff *= float(np.clip((0.13 - spread) / 0.05, 0.0, 1.0))
             if part == "clavicle":
                 # 锁骨簇里混着领口/前胸, 一旦旋转就会把领口往下拽 -> 只平移不旋转
                 R = np.eye(3)
             else:
-                R = np.eye(3) if np.linalg.norm(axis) < 1e-6 else _rodrigues(axis, math.radians(min(ang, max_rot)))
-            h = piv[k]
+                R = np.eye(3) if np.linalg.norm(axis) < 1e-6 or ang_eff < 1e-6 \
+                    else _rodrigues(axis, math.radians(ang_eff))
             t = (np.median(B, axis=0) - np.median(A, axis=0)) * STR[part]
             L = float(np.linalg.norm(t))
             if L > max_move:
                 t = t * (max_move / L)
             P = (R @ (W - h).T).T + h + t
+            if loose_fade and part != "clavicle" and Lb > 1e-6:
+                rel = W - h
+                tp = rel @ d0
+                rad = np.linalg.norm(rel - np.outer(tp, d0), axis=1)
+                near = max(0.05, 0.35 * Lb)
+                far = max(0.10, 0.75 * Lb)
+                att = np.clip((far - rad) / max(1e-6, far - near), 0.0, 1.0)
+                w = w * att
             disp += w[:, None] * (P - W).astype(np.float32)
         _set_wverts(garment, W + disp)
         if progress:
@@ -1501,7 +1541,8 @@ class GF_OT_match(bpy.types.Operator):
                 fix_arm_pose(st.garment, st.body, arm, st.arm_max_rot, st.arm_strength,
                              st.arm_max_move / 100.0, st.arm_iterations,
                              st.arm_rigid_chunks, st.arm_str_up, st.arm_str_lo,
-                             st.weight_smooth, st.arm_str_cl, pr, 30, 50)
+                             st.weight_smooth, st.arm_str_cl, pr, 30, 50,
+                             st.arm_loose, st.arm_loose_fade)
             moved = 0
             if st.do_fit:
                 pr.step(50, "防穿模")
@@ -1648,7 +1689,8 @@ class GF_OT_pose_only(bpy.types.Operator):
             fix_arm_pose(st.garment, st.body, arm, st.arm_max_rot, st.arm_strength,
                          st.arm_max_move / 100.0, st.arm_iterations,
                          st.arm_rigid_chunks, st.arm_str_up, st.arm_str_lo,
-                         st.weight_smooth, st.arm_str_cl, pr, 0, 100)
+                         st.weight_smooth, st.arm_str_cl, pr, 0, 100,
+                         st.arm_loose, st.arm_loose_fade)
             pr.end("姿态校正完成")
         finally:
             if pr.wm:
@@ -1971,6 +2013,8 @@ class GF_PT_arm(bpy.types.Panel):
         col.prop(st, "arm_str_lo")
         col.prop(st, "arm_iterations")
         col.prop(st, "arm_rigid_chunks")
+        col.prop(st, "arm_loose")
+        col.prop(st, "arm_loose_fade")
 
 
 class GF_PT_fit(bpy.types.Panel):

@@ -154,6 +154,8 @@ Blender 的布料解算器**不能**导出到 UE。这一步是把网格准备�
 | 肩 / 上臂 / 小臂强度 | 0.30 / 0.95 / 0.70 | 小臂露→调大小臂；绑带被拉坏→调小 |
 | 迭代次数 | 2 | 没收敛→3 |
 | 按碎块刚性 | 关 | 只在必须保住小片且能接受缝隙时开 |
+| 宽袖保护（大袖不跟甩） | 开 | 袖子越肥越自动减弱"旋转"（大袖摆硬转会折出硬褶）；关掉=完全按骨骼轴转 |
+| 袖摆按距离衰减 | 关 | 离手臂越远受力越小，更自然但会拉伸布料，只在袖摆被甩飞时开 |
 
 **防穿模**：布料间隙 8 mm；最大推出 5 cm。
 
@@ -348,6 +350,8 @@ every parameter lives in the collapsible sections below, **all collapsed by defa
 | Shoulder / Upper arm / Forearm strength | 0.30 / 0.95 / 0.70 | forearm exposed → up; bracer straps stretched → down |
 | Iterations | 2 | not converged → 3 |
 | Rigid per chunk | off | only if you must keep small plates and accept seams |
+| Loose-sleeve guard | on | the wider the sleeve, the more the *rotation* is damped (rotating a big sleeve folds hard creases); off = rotate fully along the bones |
+| Sleeve falloff by distance | off | far fabric follows less — natural but stretches the cloth; only for sleeves that get thrown around |
 
 **Penetration fix**: cloth gap 8 mm; max push 5 cm.
 
