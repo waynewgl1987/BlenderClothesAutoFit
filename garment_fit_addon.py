@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 11, 4),
+    "version": (1, 11, 5),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -569,7 +569,7 @@ def _find_part_bone(armature, keys, side):
 
 
 def _limb_gates(armature, hands=True, feet=True):
-    """腕/踝关节: (名字, 关节世界坐标, 肢体向外方向的单位向量, 半径倍数)。
+    """腕/踝关节: (名字, 关节世界坐标, 肢体向外方向的单位向量, 半径倍数, 沿肢体最长切多远)。
     方向 = 父骨.head -> 本骨.head, 也就是 小臂->腕 / 小腿->踝。"""
     mw = armature.matrix_world
     gates = []
@@ -582,7 +582,8 @@ def _limb_gates(armature, hands=True, feet=True):
                 d = o - p
                 n = float(np.linalg.norm(d))
                 if n > 1e-6:
-                    gates.append(("hand_" + side, o, d / n, 1.0))
+                    # 手: 切得长一点(0.45 m)、半径 1.3 倍, 把手掌/手指的残留一起带走
+                    gates.append(("hand_" + side, o, d / n, 1.30, 0.45))
         if feet:
             b = _find_part_bone(armature, ("foot", "ankle"), side)
             if b is not None and b.parent is not None:
@@ -591,7 +592,8 @@ def _limb_gates(armature, hands=True, feet=True):
                 d = o - p
                 n = float(np.linalg.norm(d))
                 if n > 1e-6:
-                    gates.append(("foot_" + side, o, d / n, 1.5))
+                    # 脚: 只切踝下很短一段(0.14 m), 半径 0.85 倍, 少切裤脚/靴子
+                    gates.append(("foot_" + side, o, d / n, 0.85, 0.14))
     return gates
 
 
@@ -652,14 +654,11 @@ def trim_body_parts(garment, body, armature=None, hands=True, feet=True, head=Fa
     else:
         nearest_mm = None
 
-    for nm, o, d, rk in gates:
+    for nm, o, d, rk, glen in gates:
         rel = W - o
         t = rel @ d
         radial = np.linalg.norm(rel - np.outer(t, d), axis=1)
-        mask |= (t > 0.0) & (t < cut_len) & (radial < cut_radius * rk)
-        # 脚: 踝点附近再兜一圈(脚是往前长的, 不在小腿轴线上)
-        if nm.startswith("foot"):
-            mask |= np.linalg.norm(rel, axis=1) < cut_radius * rk
+        mask |= (t > 0.0) & (t < glen) & (radial < cut_radius * rk)
 
     if progress:
         progress.step(p0 + (p1 - p0) * 2 // 3, "筛选中…（%d 个顶点）" % int(mask.sum()))
