@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 7, 4),
+    "version": (1, 7, 5),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -1728,20 +1728,12 @@ def run_match(context, op, skip_arm=False):
         if st.do_weights:
             pr.step(2, "传递权重")
             transfer_weights(st.garment, st.body, st.limit_weights, pr, 2, 30)
-        if st.do_arm_pose:
+        if st.do_arm_pose and not skip_arm:
             pr.step(32, "手臂姿态校正")
             fix_arm_pose(st.garment, st.body, arm, st.arm_max_rot, st.arm_strength,
                          st.arm_max_move / 100.0, st.arm_iterations,
                          st.arm_rigid_chunks, st.arm_str_up, st.arm_str_lo,
-                         st.weight_smooth, st.arm_str_cl, pr, 30, 45)
-            if skip_arm:
-                # 大袖/垂袖: 在姿态校正之后, 再把袖口那一圈吸附到人物手腕
-                pr.step(46, "袖口吸附到手腕")
-                try:
-                    snap_cuffs_to_arms(st.garment, arm, st.arm_strength, 0.15,
-                                       st.cuff_tighten, pr, 46, 50)
-                except Exception as e:
-                    print("[GarmentFit] 袖口吸附失败:", e)
+                         st.weight_smooth, st.arm_str_cl, pr, 30, 50)
         moved = 0
         if st.do_fit:
             pr.step(50, "防穿模")
