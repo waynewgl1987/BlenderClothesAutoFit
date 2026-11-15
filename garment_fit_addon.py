@@ -133,7 +133,7 @@ class GF_Settings(bpy.types.PropertyGroup):
     arm_rigid_chunks: bpy.props.BoolProperty(name="按碎块刚性（无裂缝但会拉开薄片）", default=False)
     cuff_tighten: bpy.props.FloatProperty(
         name="袖口收紧(大袖)", default=0.0, min=0.0, max=1.0, precision=2,
-        description="大袖匹配后把袖子往手臂上收：0=保留垂坠（前臂可能露出），1=贴着手臂（完全盖住前臂）")
+        description="默认 0 = 完全不改袖口形状；只有当前臂从宽袖口里露出来时才往上调（会改变袖口形状）")
 
     do_fit: bpy.props.BoolProperty(name="防穿模(推出穿插)", default=True)
     fit_gap: bpy.props.FloatProperty(name="布料间隙", default=0.008, min=0.0, max=0.05,
@@ -1353,6 +1353,8 @@ def snap_cuffs_to_arms(garment, armature, strength=1.0, max_move=0.15, tighten=0
         f = np.clip((t - t0) / (t1 - t0), 0.0, 1.0)
         f = f * f * (3.0 - 2.0 * f)                       # smoothstep
         f *= np.clip((FS["lowerarm_" + side][sel] - 0.15) / 0.5, 0.0, 1.0)
+        # 远端整段按"刚体平移"处理: 只在小臂近端做过渡, 袖口形状一点不变
+        f = np.maximum(f, np.clip((t - (t0 + 0.35 * (t1 - t0))) / 0.05, 0.0, 1.0))
         disp[sel] += f[:, None] * delta
 
         if tighten > 1e-4:
