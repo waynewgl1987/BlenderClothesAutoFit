@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 Garment Fit - 衣服一键匹配人物（贴合 / 骨骼姿态校正 / 蒙皮 / 导出 UE5）
 Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 11, 1),
+    "version": (1, 11, 2),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -2039,12 +2039,12 @@ def run_match(context, op, loose_sleeve=False):
                          st.arm_rigid_chunks, st.arm_str_up, st.arm_str_lo,
                          st.weight_smooth, st.arm_str_cl, pr, 30, 50)
         if st.do_arm_pose and loose_sleeve:
-            # 大袖/垂袖: 整只袖子刚体对齐到手臂"位置+方向", 手落在袖口里
-            pr.step(32, "袖子对齐手臂")
+            # 大袖/垂袖: 只把袖子整体平移到手腕位置(不旋转、不形变), 垂下来的造型原样保留
+            pr.step(32, "袖子整体移到手腕")
             try:
-                align_sleeve_to_arm(st.garment, arm, 70.0, pr, 32, 50)
+                translate_sleeves_rigid(st.garment, arm, 0.30)
             except Exception as e:
-                print("[GarmentFit] 大袖对齐失败:", e)
+                print("[GarmentFit] 袖子平移失败:", e)
         moved = 0
         if st.do_fit:
             pr.step(50, "防穿模")
