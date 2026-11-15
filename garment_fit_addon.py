@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 11, 0),
+    "version": (1, 11, 1),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -2242,6 +2242,12 @@ class GF_OT_auto(bpy.types.Operator):
                 except Exception as e:
                     print("[GarmentFit] 贴合失败:", e)
                     break
+            # 贴合之后身体可能从布面顶出来, 再补一次防穿模
+            pr.step(92, "补一次防穿模")
+            try:
+                fit_penetration(st.garment, st.body, st.fit_gap, st.fit_max_push)
+            except Exception as e:
+                print("[GarmentFit] 补防穿模失败:", e)
             pr.end("完成")
         finally:
             if pr.wm:
