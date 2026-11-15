@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 7, 6),
+    "version": (1, 7, 7),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -1789,21 +1789,12 @@ def run_match(context, op, skip_arm=False):
         if st.do_weights:
             pr.step(2, "传递权重")
             transfer_weights(st.garment, st.body, st.limit_weights, pr, 2, 30)
-        if st.do_arm_pose and not skip_arm:
+        if st.do_arm_pose:
             pr.step(32, "手臂姿态校正")
             fix_arm_pose(st.garment, st.body, arm, st.arm_max_rot, st.arm_strength,
                          st.arm_max_move / 100.0, st.arm_iterations,
                          st.arm_rigid_chunks, st.arm_str_up, st.arm_str_lo,
                          st.weight_smooth, st.arm_str_cl, pr, 30, 50)
-        elif st.do_arm_pose and skip_arm:
-            # 大袖/垂袖: 整只袖子当刚体绕肩转到手臂方向 + 袖口轻微往手腕拉(不改变局部形状)
-            pr.step(32, "袖子整体对齐手臂")
-            try:
-                align_sleeves_rigid(st.garment, arm, st.arm_strength, 55.0, pr, 32, 42)
-                pr.step(43, "袖口对齐手腕")
-                snap_cuffs_to_arms(st.garment, arm, min(1.0, st.arm_strength), 0.06, 0.0, pr, 43, 50)
-            except Exception as e:
-                print("[GarmentFit] 大袖对齐失败:", e)
         moved = 0
         if st.do_fit:
             pr.step(50, "防穿模")
@@ -1832,16 +1823,6 @@ class GF_OT_match(bpy.types.Operator):
 
     def execute(self, context):
         return run_match(context, self, skip_arm=False)
-
-
-class GF_OT_match_loose(bpy.types.Operator):
-    """大袖/垂袖专用: 跳过手臂姿态校正(大袖不该贴着手臂转), 其余权重/防穿模/绑定照旧"""
-    bl_idname = "garment_fit.match_loose"
-    bl_label = "一键匹配 (大袖/垂袖)"
-    bl_options = {"REGISTER", "UNDO"}
-
-    def execute(self, context):
-        return run_match(context, self, skip_arm=True)
 
 
 class GF_OT_scale_match(bpy.types.Operator):
@@ -2300,9 +2281,6 @@ class GF_PT_panel(bpy.types.Panel):
         box.row(align=True).prop(st, "match_mode", expand=True)
         lay.scale_y = 1.5
         lay.operator("garment_fit.match", icon="MOD_ARMATURE")
-        lay.scale_y = 1.2
-        lay.operator("garment_fit.match_loose", icon="MOD_CLOTH",
-                     text="一键匹配 (大袖/垂袖)")
         lay.scale_y = 1.0
         row = lay.row(align=True)
         row.operator("garment_fit.arm_pose", icon="FILE_REFRESH")
@@ -2395,7 +2373,6 @@ class GF_PT_arm(bpy.types.Panel):
         col.prop(st, "arm_str_lo")
         col.prop(st, "arm_iterations")
         col.prop(st, "arm_rigid_chunks")
-        col.prop(st, "cuff_tighten")
 
 
 class GF_PT_fit(bpy.types.Panel):
@@ -2506,7 +2483,7 @@ class GF_PT_export(bpy.types.Panel):
         lay.prop(st, "export_path", text="")
 
 
-CLASSES = (GF_Settings, GF_OT_match, GF_OT_match_loose, GF_OT_scale_match, GF_OT_trim_body,
+CLASSES = (GF_Settings, GF_OT_match, GF_OT_scale_match, GF_OT_trim_body,
            GF_OT_pose_only, GF_OT_weights_only,
            GF_OT_pick_body, GF_OT_pick_garment, GF_OT_export,
            GF_OT_cloth, GF_OT_restore, GF_OT_report, GF_OT_recenter,
