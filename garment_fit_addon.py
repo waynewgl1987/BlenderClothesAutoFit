@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 11, 6),
+    "version": (1, 11, 7),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -678,10 +678,11 @@ def trim_body_parts(garment, body, armature=None, hands=True, feet=True, head=Fa
             tf = rel @ dd
             radf = np.linalg.norm(rel - np.outer(tf, dd), axis=1)
             mask |= (tf > -0.06) & (tf < Lf + 0.10) & (radf < cut_radius * 1.0)
-            # 踝点以下(含鞋底)在水平半径内一刀切掉
+            # 踝点以下(含鞋底/脚掌) —— 用"到脚骨线段的三维距离"判定, 覆盖脚尖方向
             below = W[:, 2] < (h[2] + 0.03)
-            horiz = np.linalg.norm((W - h)[:, :2], axis=1)
-            mask |= below & (horiz < cut_radius * 1.2)
+            seg_pt = h + np.outer(np.clip(((W - h) @ dd), -0.05, Lf + 0.10), dd)
+            dist_seg = np.linalg.norm(W - seg_pt, axis=1)
+            mask |= below & (dist_seg < max(0.30, cut_radius * 2.0))
 
     if progress:
         progress.step(p0 + (p1 - p0) * 2 // 3, "筛选中…（%d 个顶点）" % int(mask.sum()))
