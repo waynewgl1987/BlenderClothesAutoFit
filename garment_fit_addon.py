@@ -117,7 +117,9 @@ class GF_Settings(bpy.types.PropertyGroup):
     trim_feet: bpy.props.BoolProperty(name="脚(脚踝/脚趾)", default=True)
     trim_head: bpy.props.BoolProperty(name="头/脖子", default=False)
     trim_margin: bpy.props.FloatProperty(name="判定距离(mm)", default=10.0, min=1.0, max=100.0, precision=0)
-    trim_cut: bpy.props.BoolProperty(name="切断腕/踝以外(袖口/裤脚)", default=True)
+    trim_cut: bpy.props.BoolProperty(name="切断腕/踝以外(袖口/裤脚)", default=False,
+                                     description="危险: 会把袖口以外的衣服布料一起切掉。只有确认衣服里长着"
+                                                 "多余的手/脚时才开，并把切断半径调小(5~8cm)")
     trim_cut_radius: bpy.props.FloatProperty(name="切断半径(cm)", default=15.0, min=3.0, max=30.0, precision=1)
     trim_info: bpy.props.StringProperty(name="上次清理", default="")
 
@@ -658,6 +660,12 @@ def trim_body_parts(garment, body, armature=None, hands=True, feet=True, head=Fa
     bm.verts.ensure_lookup_table()
     doomed = [f for f in bm.faces if any(mask[v.index] for v in f.verts)]
     nf, nv = len(doomed), int(mask.sum())
+    # 安全阀: 一次删掉超过 10% 的网格说明判定过宽(会把衣服本身切掉) -> 拒绝执行
+    if nv > max(2000, int(n * 0.10)):
+        bm.free()
+        raise ValueError("这次判定会删掉 %d 个顶点(%.1f%%)，太多了，可能会把衣服本身切坏。"
+                         "请把「切断半径」调小，或关闭「切断腕/踝以外」只删重合层。"
+                         % (nv, 100.0 * nv / max(1, n)))
     if nf:
         bmesh.ops.delete(bm, geom=doomed, context="FACES")
         loose = [v for v in bm.verts if not v.link_faces]
