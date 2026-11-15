@@ -1,0 +1,28 @@
+# Blender
+*.blend
+*.blend1
+*.blend2
+*.blend[0-9]
+*.blend@
+*.blend_backup*
+
+# FBX / mesh interchange exports
+*.fbx
+*.FBX
+*.obj
+*.gltf
+*.glb
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+# OS / editor
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/
