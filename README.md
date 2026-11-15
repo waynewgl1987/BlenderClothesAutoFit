@@ -115,6 +115,10 @@ Blender 的布料解算器**不能**导出到 UE。这一步是把网格准备�
 
 ### 面板参数
 
+面板默认**只显示能点的按钮**（一键匹配 / 仅校正 / 还原 / 尺寸匹配 / 清理 / 布料 / 导出）；
+所有参数都收在下面的折叠项里，默认**全部收缩**，点标题才展开：
+`匹配 / 蒙皮选项`、`手臂姿态校正参数`、`防穿模参数`、`尺寸匹配设置`、`清理设置`、`布料预处理设置`、`导出设置`。
+
 **蒙皮**
 
 | 参数 | 默认 | 说明 |
@@ -304,6 +308,10 @@ Requirements: Blender **4.2+** (tested on 5.1), NumPy (bundled). No dependencies
 7. Choose the export scope and click **Export FBX**.
 
 ### Panel reference
+
+The panel shows **only the clickable buttons** by default (one-click match / pose only / restore / size match / trim / cloth / export);
+every parameter lives in the collapsible sections below, **all collapsed by default**:
+*Match / skin*, *Arm pose*, *Penetration*, *Size match*, *Trim*, *Cloth prep*, *Export*.
 
 **Skin**
 

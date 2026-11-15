@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 4, 3),
+    "version": (1, 5, 0),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -1864,16 +1864,7 @@ class GF_PT_panel(bpy.types.Panel):
         st = context.scene.garment_fit
         lay = self.layout
 
-        box = lay.box()
-        box.label(text="匹配方向", icon="ARROW_LEFTRIGHT")
-        col = box.column()
-        col.row(align=True).prop(st, "match_mode", expand=True)
-        if st.match_mode == "BODY":
-            box.label(text="改人物尺寸/手臂姿势，衣服几何不动", icon="INFO")
-            box.prop(st, "bake_body")
-        else:
-            box.label(text="改衣服几何去贴合人物（默认）", icon="INFO")
-
+        # ---- 对象(必须先选) ----
         box = lay.box()
         box.label(text="对象", icon="OBJECT_DATA")
         row = box.row(align=True)
@@ -1883,47 +1874,93 @@ class GF_PT_panel(bpy.types.Panel):
         row.prop(st, "garment", text="衣服")
         row.operator("garment_fit.pick_garment", text="", icon="EYEDROPPER")
         box.prop(st, "armature", text="骨架")
-        box.prop(st, "auto_scale")
 
+        # ---- 方向 + 主按钮 ----
         box = lay.box()
-        box.label(text="尺寸匹配 (统一缩放, 比例不变)", icon="FULLSCREEN_ENTER")
-        box.prop(st, "scale_metric", text="基准")
+        box.label(text="匹配方向", icon="ARROW_LEFTRIGHT")
+        box.row(align=True).prop(st, "match_mode", expand=True)
+        lay.scale_y = 1.5
+        lay.operator("garment_fit.match", icon="MOD_ARMATURE")
+        lay.scale_y = 1.0
+        row = lay.row(align=True)
+        row.operator("garment_fit.arm_pose", icon="FILE_REFRESH")
+        row.operator("garment_fit.weights_only", icon="GROUP_VERTEX")
+        row = lay.row(align=True)
+        row.operator("garment_fit.restore_orig", icon="LOOP_BACK")
+        row.operator("garment_fit.report", icon="INFO")
+
+        # ---- 尺寸匹配 ----
+        box = lay.box()
+        box.label(text="尺寸匹配 (统一缩放)", icon="FULLSCREEN_ENTER")
         row = box.row(align=True)
         op = row.operator("garment_fit.scale_match", text="人物 → 衣服")
         op.direction = "BODY"
         op = row.operator("garment_fit.scale_match", text="衣服 → 人物")
         op.direction = "GARMENT"
-        box.prop(st, "guard_cuff")
-        box.prop(st, "align_positions")
         if st.scale_info:
             box.label(text=st.scale_info, icon="CHECKMARK")
 
+        # ---- 清理 / 布料 ----
         box = lay.box()
-        box.label(text="清理多余人体部位", icon="TRASH")
-        row = box.row(align=True)
-        row.prop(st, "trim_hands")
-        row.prop(st, "trim_feet")
-        row.prop(st, "trim_head")
-        box.prop(st, "trim_margin")
-        box.prop(st, "trim_cut")
-        col = box.column(align=True)
-        col.enabled = st.trim_cut
-        col.prop(st, "trim_cut_radius")
-        box.operator("garment_fit.trim_body", icon="TRASH", text="删除衣服上的手/脚/头")
+        box.label(text="清理 / 布料", icon="TRASH")
+        box.operator("garment_fit.trim_body", icon="TRASH",
+                     text="删除多余人体部位 (手/脚/头)")
+        box.operator("garment_fit.cloth_prep", icon="MOD_CLOTH",
+                     text="布料优化 (焊接+遮罩+低模)")
         if st.trim_info:
             box.label(text=st.trim_info, icon="INFO")
 
-        box = lay.box()
-        box.label(text="蒙皮", icon="ARMATURE_DATA")
-        box.prop(st, "do_weights")
-        col = box.column(align=True)
+        # ---- 进度(只在执行中出现, 跑完自动隐藏) ----
+        if st.stage and st.progress < 0.999:
+            box = lay.box()
+            box.prop(st, "progress", text="%.0f%%" % (st.progress * 100), slider=True)
+            box.label(text=st.stage, icon="TIME")
+
+        # ---- 导出 ----
+        lay.separator()
+        lay.scale_y = 1.3
+        lay.operator("garment_fit.export_fbx", icon="FILE_TICK", text="导出 FBX (给 UE5)")
+        lay.scale_y = 1.0
+        lay.label(text="展开下方折叠项可调参数", icon="TRIA_DOWN")
+
+
+class GF_PT_match_opts(bpy.types.Panel):
+    bl_label = "匹配 / 蒙皮选项"
+    bl_idname = "GF_PT_match_opts"
+    bl_parent_id = "GF_PT_panel"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "Garment Fit"
+    bl_options = {"DEFAULT_CLOSED"}
+    bl_order = 0
+
+    def draw(self, context):
+        st = context.scene.garment_fit
+        lay = self.layout
+        lay.prop(st, "auto_scale")
+        if st.match_mode == "BODY":
+            lay.prop(st, "bake_body")
+        lay.prop(st, "do_weights")
+        col = lay.column(align=True)
         col.enabled = st.do_weights
         col.prop(st, "limit_weights")
 
-        box = lay.box()
-        box.label(text="手臂姿态校正 (POSE 不匹配)", icon="BONE_DATA")
-        box.prop(st, "do_arm_pose")
-        col = box.column(align=True)
+
+class GF_PT_arm(bpy.types.Panel):
+    bl_label = "手臂姿态校正参数"
+    bl_idname = "GF_PT_arm"
+    bl_parent_id = "GF_PT_panel"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "Garment Fit"
+    bl_options = {"DEFAULT_CLOSED"}
+    bl_order = 1
+
+    def draw(self, context):
+        st = context.scene.garment_fit
+        lay = self.layout
+        lay.prop(st, "do_arm_pose")
+        col = lay.column(align=True)
         col.enabled = st.do_arm_pose
         col.prop(st, "weight_smooth")
         col.prop(st, "arm_max_rot")
@@ -1934,21 +1971,85 @@ class GF_PT_panel(bpy.types.Panel):
         col.prop(st, "arm_str_lo")
         col.prop(st, "arm_iterations")
         col.prop(st, "arm_rigid_chunks")
-        box.operator("garment_fit.arm_pose", icon="FILE_REFRESH")
 
-        if st.match_mode == "GARMENT":
-            box = lay.box()
-            box.label(text="防穿模", icon="MOD_SHRINKWRAP")
-            box.prop(st, "do_fit")
-            col = box.column(align=True)
-            col.enabled = st.do_fit
-            col.prop(st, "fit_gap")
-            col.prop(st, "fit_max_push")
 
-        box = lay.box()
-        box.label(text="布料预处理 (给 UE Chaos Cloth)", icon="MOD_CLOTH")
-        box.prop(st, "do_cloth")
-        col = box.column(align=True)
+class GF_PT_fit(bpy.types.Panel):
+    bl_label = "防穿模参数"
+    bl_idname = "GF_PT_fit"
+    bl_parent_id = "GF_PT_panel"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "Garment Fit"
+    bl_options = {"DEFAULT_CLOSED"}
+    bl_order = 2
+
+    def draw(self, context):
+        st = context.scene.garment_fit
+        lay = self.layout
+        lay.prop(st, "do_fit")
+        col = lay.column(align=True)
+        col.enabled = st.do_fit
+        col.prop(st, "fit_gap")
+        col.prop(st, "fit_max_push")
+
+
+class GF_PT_scale(bpy.types.Panel):
+    bl_label = "尺寸匹配设置"
+    bl_idname = "GF_PT_scale"
+    bl_parent_id = "GF_PT_panel"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "Garment Fit"
+    bl_options = {"DEFAULT_CLOSED"}
+    bl_order = 3
+
+    def draw(self, context):
+        st = context.scene.garment_fit
+        lay = self.layout
+        lay.prop(st, "scale_metric", text="基准")
+        lay.prop(st, "guard_cuff")
+        lay.prop(st, "align_positions")
+
+
+class GF_PT_trim(bpy.types.Panel):
+    bl_label = "清理设置"
+    bl_idname = "GF_PT_trim"
+    bl_parent_id = "GF_PT_panel"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "Garment Fit"
+    bl_options = {"DEFAULT_CLOSED"}
+    bl_order = 4
+
+    def draw(self, context):
+        st = context.scene.garment_fit
+        lay = self.layout
+        row = lay.row(align=True)
+        row.prop(st, "trim_hands")
+        row.prop(st, "trim_feet")
+        row.prop(st, "trim_head")
+        lay.prop(st, "trim_margin")
+        lay.prop(st, "trim_cut")
+        col = lay.column(align=True)
+        col.enabled = st.trim_cut
+        col.prop(st, "trim_cut_radius")
+
+
+class GF_PT_cloth(bpy.types.Panel):
+    bl_label = "布料预处理设置"
+    bl_idname = "GF_PT_cloth"
+    bl_parent_id = "GF_PT_panel"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "Garment Fit"
+    bl_options = {"DEFAULT_CLOSED"}
+    bl_order = 5
+
+    def draw(self, context):
+        st = context.scene.garment_fit
+        lay = self.layout
+        lay.prop(st, "do_cloth")
+        col = lay.column(align=True)
         col.enabled = st.do_cloth
         col.prop(st, "weld_mm")
         col.prop(st, "make_sim_mesh")
@@ -1957,38 +2058,35 @@ class GF_PT_panel(bpy.types.Panel):
         col.prop(st, "pin_waist_ratio")
         col.prop(st, "pin_shoulder")
         col.prop(st, "mask_smooth")
-        box.operator("garment_fit.cloth_prep", icon="MOD_CLOTH",
-                     text="布料优化（焊接+遮罩+低模）")
 
-        lay.separator()
-        lay.scale_y = 1.4
-        lay.operator("garment_fit.match", icon="MOD_ARMATURE")
-        lay.scale_y = 1.0
-        lay.operator("garment_fit.weights_only", icon="GROUP_VERTEX")
-        lay.operator("garment_fit.restore_orig", icon="LOOP_BACK")
-        lay.operator("garment_fit.report", icon="INFO")
 
-        box = lay.box()
-        box.label(text="进度", icon="TIME")
-        box.prop(st, "progress", text="%.0f%%" % (st.progress * 100), slider=True)
-        box.label(text=st.stage or "空闲")
+class GF_PT_export(bpy.types.Panel):
+    bl_label = "导出设置"
+    bl_idname = "GF_PT_export"
+    bl_parent_id = "GF_PT_panel"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "Garment Fit"
+    bl_options = {"DEFAULT_CLOSED"}
+    bl_order = 6
 
-        lay.separator()
-        box = lay.box()
-        box.label(text="导出 UE5", icon="EXPORT")
-        box.row(align=True).prop(st, "export_scope", expand=True)
+    def draw(self, context):
+        st = context.scene.garment_fit
+        lay = self.layout
+        lay.row(align=True).prop(st, "export_scope", expand=True)
         if st.export_scope in ("GARMENT", "BOTH"):
-            box.prop(st, "export_sim")
+            lay.prop(st, "export_sim")
             if st.export_sim:
-                box.prop(st, "export_split_sim")
-        box.prop(st, "export_path", text="")
-        box.operator("garment_fit.export_fbx", icon="FILE_TICK")
+                lay.prop(st, "export_split_sim")
+        lay.prop(st, "export_path", text="")
 
 
 CLASSES = (GF_Settings, GF_OT_match, GF_OT_scale_match, GF_OT_trim_body,
            GF_OT_pose_only, GF_OT_weights_only,
            GF_OT_pick_body, GF_OT_pick_garment, GF_OT_export,
-           GF_OT_cloth, GF_OT_restore, GF_OT_report, GF_PT_panel)
+           GF_OT_cloth, GF_OT_restore, GF_OT_report,
+           GF_PT_panel, GF_PT_match_opts, GF_PT_arm, GF_PT_fit,
+           GF_PT_scale, GF_PT_trim, GF_PT_cloth, GF_PT_export)
 
 
 def register():
