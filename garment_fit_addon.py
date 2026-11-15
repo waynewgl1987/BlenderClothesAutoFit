@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 7, 5),
+    "version": (1, 7, 6),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -1306,6 +1306,67 @@ def fix_arm_pose(garment, body, armature, max_rot=10.0, strength=1.0,
 
 
 # ================================================================== 大袖: 袖口吸附
+def align_sleeves_rigid(garment, armature, strength=1.0, max_deg=55.0,
+                        progress=None, p0=32, p1=46):
+    """大袖/垂袖: 把整只袖子当作刚体绕肩关节转到人物手臂方向上。
+
+    刚体旋转不会改变任何局部形状(袖口、褶子、垂坠都原样), 只在肩部做权重过渡,
+    所以既能让袖子跟着手臂走, 又不会把袖口揉乱。
+    """
+    FW = _fam_weights(garment)
+    W = _wverts(garment).astype(np.float64)
+    FS = _smooth_fam(FW, W, 0.02, 2)
+    bones = _find_arm_bones(armature)
+    mw = armature.matrix_world
+    disp = np.zeros_like(W)
+    done = 0
+    for side in ("l", "r"):
+        bu = bones.get("upperarm_" + side)
+        bl = bones.get("lowerarm_" + side)
+        bh = bones.get("hand_" + side)
+        if not bu or not bl:
+            continue
+        sh = np.array(mw @ armature.pose.bones[bu].head, float)
+        el = np.array(mw @ armature.pose.bones[bl].head, float)
+        wr = np.array(mw @ armature.pose.bones[bh].head, float) if bh \
+            else np.array(mw @ armature.pose.bones[bl].tail, float)
+        w = np.clip(FS["upperarm_" + side] + FS["lowerarm_" + side], 0.0, 1.0)
+        sel = w > 0.25
+        if int(sel.sum()) < 300:
+            continue
+        A = W[sel]
+        # 衣服袖子自己的轴向: 离肩最近的 15% -> 最远的 15%
+        d_body = wr - sh
+        Lb = float(np.linalg.norm(d_body))
+        if Lb < 1e-6:
+            continue
+        d_body /= Lb
+        t = (A - sh) @ d_body
+        near = A[t <= np.percentile(t, 15)].mean(0)
+        far = A[t >= np.percentile(t, 85)].mean(0)
+        ax_g = far - near
+        lg = float(np.linalg.norm(ax_g))
+        if lg < 1e-5:
+            continue
+        ax_g /= lg
+        ang = math.degrees(math.acos(float(np.clip(ax_g @ d_body, -1.0, 1.0))))
+        axis = np.cross(ax_g, d_body)
+        if np.linalg.norm(axis) < 1e-6 or ang < 1.0:
+            continue
+        ang = min(ang * float(strength), max_deg)
+        R = _rodrigues(axis / np.linalg.norm(axis), math.radians(ang))
+        f = np.clip((w[sel] - 0.2) / 0.35, 0.0, 1.0)
+        f = f * f * (3.0 - 2.0 * f)
+        rotated = (R @ (A - sh).T).T + sh
+        disp[sel] += f[:, None] * (rotated - A)
+        done += 1
+        if progress:
+            progress.step(p0 + (p1 - p0) * done // 2, "袖子整体转向手臂 %s" % side)
+    if done:
+        _set_wverts(garment, W + disp)
+    return done
+
+
 def snap_cuffs_to_arms(garment, armature, strength=1.0, max_move=0.15, tighten=0.0,
                        progress=None, p0=30, p1=45):
     """大袖/垂袖专用: 只把"袖口那一圈"往人物手腕拉过去。
@@ -1734,6 +1795,15 @@ def run_match(context, op, skip_arm=False):
                          st.arm_max_move / 100.0, st.arm_iterations,
                          st.arm_rigid_chunks, st.arm_str_up, st.arm_str_lo,
                          st.weight_smooth, st.arm_str_cl, pr, 30, 50)
+        elif st.do_arm_pose and skip_arm:
+            # 大袖/垂袖: 整只袖子当刚体绕肩转到手臂方向 + 袖口轻微往手腕拉(不改变局部形状)
+            pr.step(32, "袖子整体对齐手臂")
+            try:
+                align_sleeves_rigid(st.garment, arm, st.arm_strength, 55.0, pr, 32, 42)
+                pr.step(43, "袖口对齐手腕")
+                snap_cuffs_to_arms(st.garment, arm, min(1.0, st.arm_strength), 0.06, 0.0, pr, 43, 50)
+            except Exception as e:
+                print("[GarmentFit] 大袖对齐失败:", e)
         moved = 0
         if st.do_fit:
             pr.step(50, "防穿模")
