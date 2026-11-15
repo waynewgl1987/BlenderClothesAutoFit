@@ -46,14 +46,15 @@
 
 把人物整体缩放到衣服的尺寸，旋转人物手臂骨骼塞进袖子，可选烘焙成新的静止姿势，再给衣服蒙皮。
 
-**3. 尺寸匹配（两个按钮，统一缩放 + 可选对齐位置）**
+**3. 尺寸匹配（统一缩放 + 可选对齐位置 + 一键回中）**
 
-面板顶部「尺寸匹配 (统一缩放, 比例不变)」两个按钮，只改大小、不改比例：
+面板「尺寸匹配 (统一缩放)」的三个按钮：
 
 | 按钮 | 改谁 | 什么时候用 |
 |---|---|---|
 | **人物 → 衣服** | 人物（骨架 + 身体一起） | 衣服是对的，人物比例/单位不对 |
 | **衣服 → 人物** | 衣服几何 | 人物是对的（UE 里的标准角色），衣服是从别处导进来的 |
+| **对齐到人物中心（只移位置）** | 衣服（纯平移） | 衣服跑偏了/飞走了，一键把包围盒中心搬回人物中心，不改尺寸也不改旋转 |
 
 - **缩放基准**：整体尺寸（包围盒对角线，默认）/ 按高度 / 按手臂(肩→腕)；
 - **同时对齐位置**：勾上后两个物体的**包围盒中心**重合成同一个点（坐标位置一致）；关掉就只改尺寸、位置保持原样；
@@ -240,14 +241,15 @@ This add-on fixes all four inside Blender, with a progress bar and one button.
 
 Scales the character to the garment's height, rotates the character's arm bones into the sleeves, optionally bakes it as the new rest pose, then skins the garment.
 
-**3. Size match (two buttons, uniform scale + optional position alignment)**
+**3. Size match (uniform scale + optional position alignment + recenter)**
 
-Two buttons at the top of the panel, *Size match (uniform scale, proportions kept)*:
+Three buttons under *Size match (uniform scale)*:
 
 | Button | Who changes | When |
 |---|---|---|
 | **Character → Garment** | character (armature + body) | the garment is right, the character's scale/units are not |
 | **Garment → Character** | garment geometry | the character is right (your UE hero), the garment came from somewhere else |
+| **Align to character centre (move only)** | garment (pure translation) | the garment drifted / flew away — snaps its bbox centre back to the character's centre without touching size or rotation |
 
 - **Scale basis**: overall size (bounding-box diagonal, default) / height / arm (shoulder→wrist);
 - **Align positions** (on by default): makes the two bounding-box centers coincide, so both objects share one coordinate frame; turn it off to change size only;
