@@ -59,7 +59,16 @@
 - 人物的缩放是改 `armature.matrix_world`，导出时会被烘进骨骼和顶点，所以 UE 里是干净的 1:1；
 - 对已蒙皮的衣服做「人物 → 衣服」时，会先解除绑定并保住世界变换（否则"两边一起缩放等于没匹配"）。
 
-**4. 布料预处理（独立按钮 → 给 UE Chaos Cloth）**
+**4. 清理多余人体部位（独立按钮）**
+
+衣服网格里常"焊着"原作者的人体零件（手、脚、头）。面板「清理多余人体部位」：
+
+- 按**人物自身顶点组**（`hand_l` / `wrist_*` / `foot_r` / `toe_*` …）取人体部位点云；
+- 把衣服上离这些点 ≤ **判定距离**（默认 10 mm）的面删掉，只删重合的那一层，袖口/裤腿本体不动；
+- 手 / 脚 / 头 三个开关，默认删手+脚；
+- 实测这套盔甲：手部删掉 8,559 面（1,132,833 面里），删完手部 10 mm 内残留 0 个顶点。
+
+**5. 布料预处理（独立按钮 → 给 UE Chaos Cloth）**
 
 Blender 的布料解算器**不能**导出到 UE。这一步是把网格准备好，让 UE 的解算器能用：
 
@@ -71,13 +80,13 @@ Blender 的布料解算器**不能**导出到 UE。这一步是把网格准备�
 
 实测（62 万顶点衣服）：碎块 595 → 1，顶点 622,715 → 593,924，Sim 网格 5,966 顶点 / 12,000 面，可模拟占比 75%。
 
-**5. 导出**
+**6. 导出**
 
 - **只衣服 / 只人物 / 两个一起**，始终带骨架；
 - 可选**带上 Sim 网格**；
 - 把场景缩放（比如 0.01）烘进顶点和骨骼 → UE 里 1:1 米制、`scale = 1`。
 
-**6. 安全保护**
+**7. 安全保护**
 
 - 自动识别骨骼命名（UE `upperarm_l`、Mixamo `LeftArm`、Maya `l_upperarm`、Unity `LeftForeArm`…）；
 - 衣服与身体尺寸差太多时自动缩放；比例超过 5 倍直接报错，**不会毁模型**；
@@ -120,6 +129,13 @@ Blender 的布料解算器**不能**导出到 UE。这一步是把网格准备�
 | 缩放基准 | 整体尺寸(对角线) | 包围盒对角线等长 → 整体体积对得上（盔甲/连体服默认）；只想高度一致选「按高度」；要袖口正好落在手腕选「按手臂(肩→腕)」 |
 | 同时对齐位置 | 开 | 两个包围盒中心重合到同一点；关掉只改尺寸 |
 | 护手（袖口不盖手掌） | 开 | 比较衣服袖口横向距离和人物手腕距离，超标自动夹紧，面板显示"应付比例 → 实际比例" |
+
+**清理多余人体部位**
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| 手 / 脚 / 头 | 手+脚 | 要删哪几个部位（头默认关：领口容易被一起删掉） |
+| 判定距离 | 10 mm | 衣服顶点离人体这些部位多近算"重复"。人体零件通常重合在 5 mm 内；删不干净就调大，删到袖子就调小 |
 
 **手臂姿态校正**
 
@@ -231,7 +247,16 @@ Two buttons at the top of the panel, *Size match (uniform scale, proportions kep
 - The character is scaled through `armature.matrix_world`, which the FBX export bakes into bones and vertices — clean 1:1 in UE;
 - For an already-skinned garment, *Character → Garment* detaches the garment and keeps its world transform first (otherwise scaling both sides is a no-op match).
 
-**4. Cloth pre-processing (separate button → for UE Chaos Cloth)**
+**4. Trim leftover body parts (separate button)**
+
+Garment meshes often still carry the original model's hands, feet or head. Panel **Trim leftover body parts**:
+
+- finds the body's hand/foot/head point cloud from its own **vertex groups** (`hand_l`, `wrist_*`, `foot_r`, `toe_*` …);
+- deletes garment faces whose vertices are within **Distance** (default 10 mm) of those points — only the coincident layer goes, the sleeve/pant leg itself stays;
+- separate switches for hands / feet / head (hands + feet on by default);
+- measured on this armour: hands removed 8,559 of 1,132,833 faces, 0 vertices left within 10 mm.
+
+**5. Cloth pre-processing (separate button → for UE Chaos Cloth)**
 
 Blender's cloth solver **cannot** be exported to UE. This step prepares the mesh so UE's solver can use it:
 
@@ -243,13 +268,13 @@ Blender's cloth solver **cannot** be exported to UE. This step prepares the mesh
 
 Measured on a 622k-vertex garment: shells 595 → 1, verts 622,715 → 593,924, sim mesh 5,966 verts / 12,000 tris, 75% simulatable.
 
-**5. Export**
+**6. Export**
 
 - **Garment only / Character only / Both**, always with the skeleton;
 - optional **Sim mesh**;
 - bakes the scene scale (e.g. 0.01) into vertices and bones → clean 1:1 metric FBX, `scale = 1` in UE.
 
-**6. Safety rails**
+**7. Safety rails**
 
 - Auto bone-name detection (UE `upperarm_l`, Mixamo `LeftArm`, Maya `l_upperarm`, Unity `LeftForeArm`…);
 - auto scale when sizes differ wildly; hard error above 5× instead of destroying the mesh;
@@ -292,6 +317,13 @@ Requirements: Blender **4.2+** (tested on 5.1), NumPy (bundled). No dependencies
 | Scale basis | Overall size (diagonal) | equal bounding-box diagonals → overall bulk matches (default for armour / full suits); *Height* for height only; *Arm (shoulder→wrist)* to land the cuffs on the wrists |
 | Align positions | on | makes both bounding-box centers coincide; off = resize only |
 | Cuff guard | on | compares the garment's sleeve reach with the character's wrist reach and clamps the factor, showing requested vs applied |
+
+**Trim leftover body parts**
+
+| Parameter | Default | Notes |
+|---|---|---|
+| Hands / Feet / Head | hands + feet | which parts to strip (head off by default — it can take the collar with it) |
+| Distance | 10 mm | how close a garment vertex must be to that body part to count as a duplicate; raise it if leftovers remain, lower it if it eats the sleeve |
 
 **Arm-pose correction**
 

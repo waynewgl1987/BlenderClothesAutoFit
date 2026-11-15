@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 4, 1),
+    "version": (1, 4, 2),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -32,10 +32,12 @@ bl_info = {
 }
 
 import bpy
+import bmesh
 import math
 import numpy as np
 from mathutils import Vector, Matrix
 from mathutils.bvhtree import BVHTree
+from mathutils.kdtree import KDTree
 from mathutils.interpolate import poly_3d_calc
 
 
@@ -105,6 +107,12 @@ class GF_Settings(bpy.types.PropertyGroup):
         name="同时对齐位置(包围盒中心)", default=True,
         description="缩放后把两个物体的包围盒中心对到同一点；关闭则只改尺寸，位置不动")
     scale_info: bpy.props.StringProperty(name="上次尺寸匹配", default="")
+
+    trim_hands: bpy.props.BoolProperty(name="手(手腕/手指)", default=True)
+    trim_feet: bpy.props.BoolProperty(name="脚(脚踝/脚趾)", default=True)
+    trim_head: bpy.props.BoolProperty(name="头/脖子", default=False)
+    trim_margin: bpy.props.FloatProperty(name="判定距离(mm)", default=10.0, min=1.0, max=100.0, precision=0)
+    trim_info: bpy.props.StringProperty(name="上次清理", default="")
 
     do_arm_pose: bpy.props.BoolProperty(name="校正手臂姿态(POSE不匹配)", default=True)
     weight_smooth: bpy.props.IntProperty(name="权重场平滑(防拉裂)", default=2, min=0, max=6)
@@ -491,6 +499,93 @@ def scale_body_to_garment(body, garment, armature, metric="HEIGHT",
     garment.matrix_world = g_world   # 衣服世界位置还原(不跟人物缩放)
     return {"k": k, "k_nominal": k_nom, "capped": capped, "metric": metric,
             "sleeves": len(limits), "detached": detached, "align": align}
+
+
+# ================================================================== 清理多余人体部位
+# 衣服里常常"焊着"原作者的人体零件(手、脚、头)。这里用人物自身的顶点组
+# (hand_l / foot_r / toe_* ...) 取人体部位的点云, 把衣服上离这些点 <= 容差
+# 的面删掉 —— 只删重合的那一层, 袖子/裤腿本体不动。
+
+_TRIM_KEYS = {
+    "hands": ("hand", "wrist", "palm", "finger", "thumb", "手指", "掌"),
+    "feet": ("foot", "ankle", "toe", "heel", "脚", "踝"),
+    "head": ("head", "skull", "jaw", "头"),
+}
+
+
+def _body_region_points(body, keys, min_w=0.25):
+    """人物身上属于这些部位的顶点(世界坐标)。靠顶点组名匹配, 没有就返回 None"""
+    idx = set()
+    for g in body.vertex_groups:
+        low = g.name.lower()
+        if any(k in low for k in keys):
+            idx.add(g.index)
+    if not idx:
+        return None
+    W = _wverts(body).astype(np.float64)
+    out = []
+    for v in body.data.vertices:
+        for ge in v.groups:
+            if ge.group in idx and ge.weight > min_w:
+                out.append(W[v.index])
+                break
+    if not out:
+        return None
+    return np.array(out, float)
+
+
+def trim_body_parts(garment, body, hands=True, feet=True, head=False, margin=0.015):
+    """把衣服上与人物手/脚/头重合的面删掉。返回统计 dict"""
+    parts = [p for p, on in (("hands", hands), ("feet", feet), ("head", head)) if on]
+    if not parts:
+        raise ValueError("没有勾选任何部位（手 / 脚 / 头）")
+    me = garment.data
+    if getattr(me, "shape_keys", None) and len(me.shape_keys.key_blocks):
+        raise ValueError("衣服有形态键，请先删除形态键再做清理")
+
+    pts = []
+    used, missing = [], []
+    for p in parts:
+        P = _body_region_points(body, _TRIM_KEYS[p])
+        if P is None:
+            missing.append(p)
+            continue
+        pts.append(P)
+        used.append(p)
+    if not pts:
+        raise ValueError("人物身上找不到手/脚/头对应的顶点组，无法判定要删哪里")
+    P = np.vstack(pts)
+
+    kd = KDTree(len(P))
+    for i in range(len(P)):
+        kd.insert(Vector(P[i].tolist()), i)
+    kd.balance()
+
+    n = len(me.vertices)
+    co = np.empty(n * 3, np.float32)
+    me.vertices.foreach_get("co", co)
+    mw = _wm(garment)
+    W = co.reshape(-1, 3) @ mw[:3, :3].T + mw[:3, 3]
+    mask = np.zeros(n, bool)
+    for i in range(n):
+        _, _, dist = kd.find(Vector(W[i].astype(float).tolist()))
+        mask[i] = dist < margin
+
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    bm.verts.ensure_lookup_table()
+    doomed = [f for f in bm.faces if any(mask[v.index] for v in f.verts)]
+    nf, nv = len(doomed), int(mask.sum())
+    if nf:
+        bmesh.ops.delete(bm, geom=doomed, context="FACES")
+        loose = [v for v in bm.verts if not v.link_faces]
+        if loose:
+            bmesh.ops.delete(bm, geom=loose, context="VERTS")
+        bm.to_mesh(me)
+        me.update()
+    bm.free()
+    return {"faces": nf, "verts": nv, "parts": used, "missing": missing,
+            "margin": margin, "left_faces": len(me.polygons)}
 
 
 # 骨骼命名归一化: 支持 UE / Mixamo / Maya / Unity / 3ds Max 等常见写法
@@ -1424,6 +1519,47 @@ class GF_OT_scale_match(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class GF_OT_trim_body(bpy.types.Operator):
+    """删除衣服上与人物重合的多余人体部位（手 / 脚 / 头）"""
+    bl_idname = "garment_fit.trim_body"
+    bl_label = "删除多余人体部位"
+    bl_description = "按人物的顶点组找出衣服上焊着的手/脚/头，把重合的那层面删掉"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        st = context.scene.garment_fit
+        if not st.body or not st.garment:
+            self.report({"ERROR"}, "请先指定 人物身体 和 衣服")
+            return {"CANCELLED"}
+        if st.body == st.garment:
+            self.report({"ERROR"}, "身体和衣服不能是同一个物体")
+            return {"CANCELLED"}
+        if context.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+
+        try:
+            res = trim_body_parts(st.garment, st.body, st.trim_hands,
+                                  st.trim_feet, st.trim_head,
+                                  st.trim_margin / 1000.0)
+        except ValueError as e:
+            self.report({"ERROR"}, str(e))
+            print("[GarmentFit] 清理失败:", e)
+            return {"CANCELLED"}
+
+        if res["faces"] == 0:
+            msg = "没找到与人物重合的部位（容差 %.0f mm）" % (res["margin"] * 1000.0)
+        else:
+            msg = "删除 %d 面，剩 %d 面（容差 %.0f mm）" % (
+                res["faces"], res["left_faces"], res["margin"] * 1000.0)
+        if res["missing"]:
+            msg += " · 没找到: " + "/".join(res["missing"])
+        st.trim_info = msg
+        st.stage = "清理人体部位: " + msg
+        self.report({"INFO"}, msg)
+        print("[GarmentFit] 清理人体部位:", msg)
+        return {"FINISHED"}
+
+
 class GF_OT_pose_only(bpy.types.Operator):
     """只校正手臂姿态(需要已有权重)"""
     bl_idname = "garment_fit.arm_pose"
@@ -1697,6 +1833,17 @@ class GF_PT_panel(bpy.types.Panel):
             box.label(text=st.scale_info, icon="CHECKMARK")
 
         box = lay.box()
+        box.label(text="清理多余人体部位", icon="TRASH")
+        row = box.row(align=True)
+        row.prop(st, "trim_hands")
+        row.prop(st, "trim_feet")
+        row.prop(st, "trim_head")
+        box.prop(st, "trim_margin")
+        box.operator("garment_fit.trim_body", icon="TRASH", text="删除衣服上的手/脚/头")
+        if st.trim_info:
+            box.label(text=st.trim_info, icon="INFO")
+
+        box = lay.box()
         box.label(text="蒙皮", icon="ARMATURE_DATA")
         box.prop(st, "do_weights")
         col = box.column(align=True)
@@ -1768,8 +1915,8 @@ class GF_PT_panel(bpy.types.Panel):
         box.operator("garment_fit.export_fbx", icon="FILE_TICK")
 
 
-CLASSES = (GF_Settings, GF_OT_match, GF_OT_scale_match, GF_OT_pose_only,
-           GF_OT_weights_only,
+CLASSES = (GF_Settings, GF_OT_match, GF_OT_scale_match, GF_OT_trim_body,
+           GF_OT_pose_only, GF_OT_weights_only,
            GF_OT_pick_body, GF_OT_pick_garment, GF_OT_export,
            GF_OT_cloth, GF_OT_restore, GF_OT_report, GF_PT_panel)
 
