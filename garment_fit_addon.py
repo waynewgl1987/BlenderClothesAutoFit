@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 8, 1),
+    "version": (1, 8, 2),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -1834,7 +1834,7 @@ def run_match(context, op, loose_sleeve=False):
         if st.do_weights:
             pr.step(2, "传递权重")
             transfer_weights(st.garment, st.body, st.limit_weights, pr, 2, 30)
-        if st.do_arm_pose:
+        if st.do_arm_pose and not loose_sleeve:
             pr.step(32, "手臂姿态校正")
             fix_arm_pose(st.garment, st.body, arm, st.arm_max_rot, st.arm_strength,
                          st.arm_max_move / 100.0, st.arm_iterations,
@@ -1871,7 +1871,7 @@ class GF_OT_match(bpy.types.Operator):
 
 
 class GF_OT_match_loose(bpy.types.Operator):
-    """大袖/垂袖: 在原一键匹配之后, 额外把袖口整段平移到人物手腕(不旋转、不收窄, 袖口形状不变)"""
+    """大袖/垂袖: 只做权重/防穿模/绑定, **完全不碰袖子几何**（袖口形状保持原样, 不会撕/皱）"""
     bl_idname = "garment_fit.match_loose"
     bl_label = "一键匹配 (大袖/垂袖)"
     bl_options = {"REGISTER", "UNDO"}
