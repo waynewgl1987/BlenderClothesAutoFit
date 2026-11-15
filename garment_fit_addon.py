@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 11, 5),
+    "version": (1, 11, 6),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -659,6 +659,29 @@ def trim_body_parts(garment, body, armature=None, hands=True, feet=True, head=Fa
         t = rel @ d
         radial = np.linalg.norm(rel - np.outer(t, d), axis=1)
         mask |= (t > 0.0) & (t < glen) & (radial < cut_radius * rk)
+
+    # 脚掌: 用"踝 → 脚尖"的脚骨线段 + 踝点以下的水平范围, 保证脚掌/鞋底都被切掉
+    if feet and armature is not None:
+        mw = armature.matrix_world
+        for side in ("l", "r"):
+            b = _find_part_bone(armature, ("foot", "ankle"), side)
+            if b is None:
+                continue
+            h = np.array(mw @ b.head_local, float)
+            tl = np.array(mw @ b.tail_local, float)
+            seg = tl - h
+            Lf = float(np.linalg.norm(seg))
+            if Lf < 1e-6:
+                continue
+            dd = seg / Lf
+            rel = W - h
+            tf = rel @ dd
+            radf = np.linalg.norm(rel - np.outer(tf, dd), axis=1)
+            mask |= (tf > -0.06) & (tf < Lf + 0.10) & (radf < cut_radius * 1.0)
+            # 踝点以下(含鞋底)在水平半径内一刀切掉
+            below = W[:, 2] < (h[2] + 0.03)
+            horiz = np.linalg.norm((W - h)[:, :2], axis=1)
+            mask |= below & (horiz < cut_radius * 1.2)
 
     if progress:
         progress.step(p0 + (p1 - p0) * 2 // 3, "筛选中…（%d 个顶点）" % int(mask.sum()))
