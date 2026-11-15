@@ -33,12 +33,14 @@
 
 ### 功能介绍
 
-**1. 一键匹配（衣服 → 人物，默认）**
+**1. 一键匹配（衣服 → 人物，默认）** —— 面板上有**两个按钮**，按衣服款式选：
 
-- **权重传递**：逐顶点找身体最近面 + 重心插值（不用那个经常传错的 `Data Transfer` 修改器）；
-- **手臂姿态校正**：按骨骼（锁骨 / 上臂 / 小臂）对衣服的手臂簇做旋转 + 位移，通过衣服自身的**平滑权重场**驱动，所以不会把碎块网格撕开；
-- **防穿模**：只把真正插进身体内部的顶点沿法线推出来，位移经过体素平滑；
-- **绑定**：Armature 修改器 + 父级，每顶点最多 4 骨，世界变换保持不变。
+- **一键匹配（姿态+蒙皮）**：原来的逻辑，权重 → 手臂姿态校正 → 防穿模 → 绑定。袖口正常的衣服用这个；
+- **一键匹配（大袖/垂袖）**：同样的权重/防穿模/绑定，但**跳过手臂姿态校正**。大袖本来就不该贴着手臂转，
+  硬转会把手垂袖摆折出硬褶、推成平板，所以这类衣服用这个按钮，形状保持自然。
+
+共同点：**权重传递**逐顶点找身体最近面 + 重心插值；**防穿模**只把插进身体的点沿法线推出来；**绑定**每顶点最多 4 骨、世界变换保持不变。
+
 
 **2. 反向模式（人物 → 衣服）**
 
@@ -109,7 +111,7 @@ Blender 的布料解算器**不能**导出到 UE。这一步是把网格准备�
 1. 选中人物身体 mesh → 点面板「身体」旁边的**吸管**（骨架自动填）；
 2. 选中衣服 mesh → 点「衣服」旁边的吸管；
 3. 保持 **匹配方向 = 衣服匹配人物**；
-4. 点 **「一键匹配（姿态+蒙皮）」**，62 万顶点约 12~20 秒，状态栏有进度条；
+4. 点 **「一键匹配（姿态+蒙皮）」**（620k 顶点约 12~20 s，状态栏有进度条和百分比）；大袖/垂袖款改用下面的 **「一键匹配（大袖/垂袖）」**
 5. 看正 / 侧 / 3-4 视角。袖子还松就调大「最大旋转角度」或「小臂强度」，再点 **「仅校正手臂姿态」**（不动权重）；
 6. （可选）需要 UE 布料就点 **「布料优化」**；
 7. 选导出范围 → 点 **「导出 FBX」**。
@@ -155,8 +157,6 @@ Blender 的布料解算器**不能**导出到 UE。这一步是把网格准备�
 | 肩 / 上臂 / 小臂强度 | 0.30 / 0.95 / 0.70 | 小臂露→调大小臂；绑带被拉坏→调小 |
 | 迭代次数 | 2 | 没收敛→3 |
 | 按碎块刚性 | 关 | 只在必须保住小片且能接受缝隙时开 |
-| 宽袖保护（大袖不跟甩） | 开 | 袖子越肥越自动减弱"旋转"（大袖摆硬转会折出硬褶）；关掉=完全按骨骼轴转 |
-| 袖摆按距离衰减 | 关 | 离手臂越远受力越小，更自然但会拉伸布料，只在袖摆被甩飞时开 |
 
 **防穿模**：布料间隙 8 mm；最大推出 5 cm。
 
@@ -230,12 +230,10 @@ This add-on fixes all four inside Blender, with a progress bar and one button.
 
 ### Features
 
-**1. One-click match (garment → character, default)**
+**1. One-click match (garment → character, default)** — two buttons on the panel, pick by garment style:
 
-- **Weight transfer** — per-vertex nearest surface + barycentric interpolation from the body (not the unreliable `Data Transfer` modifier).
-- **Arm-pose correction** — rotates / translates the garment's arm clusters per bone (clavicle / upper arm / lower arm) through its own **smooth weight field**, so a fragmented mesh never tears apart.
-- **Penetration fix** — only vertices actually inside the body are pushed out, through a voxel-smoothed field.
-- **Bind** — armature modifier + parent, max 4 influences per vertex, world transform preserved.
+- **One-click match (pose + skin)** — the original pipeline: weights → arm-pose correction → penetration fix → bind. Use it for normal cuffs;
+- **One-click match (loose / bell sleeves)** — same weights / penetration / bind, but **skips the arm-pose correction**. Bell sleeves should not be rotated onto the arm; doing so folds hard creases and turns the drape into a flat plank.
 
 **2. Reverse mode (character → garment)**
 
@@ -352,8 +350,6 @@ every parameter lives in the collapsible sections below, **all collapsed by defa
 | Shoulder / Upper arm / Forearm strength | 0.30 / 0.95 / 0.70 | forearm exposed → up; bracer straps stretched → down |
 | Iterations | 2 | not converged → 3 |
 | Rigid per chunk | off | only if you must keep small plates and accept seams |
-| Loose-sleeve guard | on | the wider the sleeve, the more the *rotation* is damped (rotating a big sleeve folds hard creases); off = rotate fully along the bones |
-| Sleeve falloff by distance | off | far fabric follows less — natural but stretches the cloth; only for sleeves that get thrown around |
 
 **Penetration fix**: cloth gap 8 mm; max push 5 cm.
 
