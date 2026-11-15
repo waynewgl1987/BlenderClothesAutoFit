@@ -36,9 +36,10 @@
 **1. 一键匹配（衣服 → 人物，默认）** —— 面板上有**两个按钮**，按衣服款式选：
 
 - **一键匹配（姿态+蒙皮）**：原来的逻辑，权重 → 手臂姿态校正 → 防穿模 → 绑定。袖口正常的衣服用这个；
-- **一键匹配（大袖/垂袖）**：同样的权重/防穿模/绑定，但**不做手臂旋转**（旋转会把垂下来的大袖摆折出硬褶），
-  改为**袖口吸附**：按"沿手臂由内到外的距离"给平滑权重，只把袖口那一圈往人物手腕拉，肩部完全不动 ——
-  袖口能扣到手腕上，袖子形状不被扭。
+- **一键匹配（大袖/垂袖）**：**手臂姿态校正 + 袖口吸附**。
+  先按骨骼把袖子拉到手臂上（和普通按钮同一套校正，手臂因此不会漏出来），
+  再把**袖口那一圈**用平滑权重吸附到人物手腕（肩部不动，最多拉 15 cm）——
+  袖口扣在手腕上，手从袖口伸出来。
 
 共同点：**权重传递**逐顶点找身体最近面 + 重心插值；**防穿模**只把插进身体的点沿法线推出来；**绑定**每顶点最多 4 骨、世界变换保持不变。
 
@@ -236,7 +237,7 @@ This add-on fixes all four inside Blender, with a progress bar and one button.
 **1. One-click match (garment → character, default)** — two buttons on the panel, pick by garment style:
 
 - **One-click match (pose + skin)** — the original pipeline: weights → arm-pose correction → penetration fix → bind. Use it for normal cuffs;
-- **One-click match (loose / bell sleeves)** — same weights / penetration / bind, but **no arm rotation** (rotating a hanging sleeve folds hard creases). Instead it **snaps the cuffs**: a smooth weight along the arm pulls only the cuff ring onto the character's wrist, the shoulder stays put — cuffs land on the wrists without twisting the drape.
+- **One-click match (loose / bell sleeves)** — **arm-pose correction + cuff snap**. It first pulls the sleeve onto the arm with the same bone-driven correction as the normal button (so the arm never shows through), then snaps the **cuff ring** onto the character's wrist with a smooth weight (shoulder anchored, max 15 cm) — cuffs land on the wrists and the hands come out of them.
 
 **2. Reverse mode (character → garment)**
 
