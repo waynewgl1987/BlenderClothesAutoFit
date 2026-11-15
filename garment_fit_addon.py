@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 7, 2),
+    "version": (1, 7, 3),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -131,6 +131,9 @@ class GF_Settings(bpy.types.PropertyGroup):
     arm_max_move: bpy.props.FloatProperty(name="最大位移(cm)", default=5.0, min=0.0, max=15.0)
     arm_iterations: bpy.props.IntProperty(name="迭代次数", default=2, min=1, max=5)
     arm_rigid_chunks: bpy.props.BoolProperty(name="按碎块刚性（无裂缝但会拉开薄片）", default=False)
+    cuff_tighten: bpy.props.FloatProperty(
+        name="袖口收紧(大袖)", default=0.0, min=0.0, max=1.0, precision=2,
+        description="大袖匹配后把袖子往手臂上收：0=保留垂坠（前臂可能露出），1=贴着手臂（完全盖住前臂）")
 
     do_fit: bpy.props.BoolProperty(name="防穿模(推出穿插)", default=True)
     fit_gap: bpy.props.FloatProperty(name="布料间隙", default=0.008, min=0.0, max=0.05,
@@ -1303,7 +1306,7 @@ def fix_arm_pose(garment, body, armature, max_rot=10.0, strength=1.0,
 
 
 # ================================================================== 大袖: 袖口吸附
-def snap_cuffs_to_arms(garment, armature, strength=1.0, max_move=0.15,
+def snap_cuffs_to_arms(garment, armature, strength=1.0, max_move=0.15, tighten=0.0,
                        progress=None, p0=30, p1=45):
     """大袖/垂袖专用: 只把"袖口那一圈"往人物手腕拉过去。
 
@@ -1351,6 +1354,19 @@ def snap_cuffs_to_arms(garment, armature, strength=1.0, max_move=0.15,
         f = f * f * (3.0 - 2.0 * f)                       # smoothstep
         f *= np.clip((FS["lowerarm_" + side][sel] - 0.15) / 0.5, 0.0, 1.0)
         disp[sel] += f[:, None] * delta
+
+        if tighten > 1e-4:
+            # 可选: 把靠手臂的那圈布料往手臂轴上收(前臂露出来时才需要)
+            rel = A - el
+            radial = rel - np.outer(t, d)
+            r = np.linalg.norm(radial, axis=1)
+            b0 = np.percentile(t, 40)
+            band = np.clip((t - b0) / max(1e-6, t1 - b0), 0.0, 1.0)
+            band = band * band * (3.0 - 2.0 * band)
+            near = np.clip((0.18 - r) / 0.18, 0.0, 1.0)
+            shrink = np.clip((r - 0.055) / np.maximum(r, 1e-6), 0.0, 1.0)
+            shrink = shrink * band * near * float(tighten)
+            disp[sel] -= radial * shrink[:, None]
         info[side] = (float(np.linalg.norm(wr - C)), dl)
         done += 1
         if progress:
@@ -1720,7 +1736,8 @@ def run_match(context, op, skip_arm=False):
                 # 大袖/垂袖: 在姿态校正之后, 再把袖口那一圈吸附到人物手腕
                 pr.step(46, "袖口吸附到手腕")
                 try:
-                    snap_cuffs_to_arms(st.garment, arm, st.arm_strength, 0.15, pr, 46, 50)
+                    snap_cuffs_to_arms(st.garment, arm, st.arm_strength, 0.15,
+                                       st.cuff_tighten, pr, 46, 50)
                 except Exception as e:
                     print("[GarmentFit] 袖口吸附失败:", e)
         moved = 0
@@ -2314,6 +2331,7 @@ class GF_PT_arm(bpy.types.Panel):
         col.prop(st, "arm_str_lo")
         col.prop(st, "arm_iterations")
         col.prop(st, "arm_rigid_chunks")
+        col.prop(st, "cuff_tighten")
 
 
 class GF_PT_fit(bpy.types.Panel):
