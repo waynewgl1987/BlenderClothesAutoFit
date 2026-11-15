@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 10, 1),
+    "version": (1, 10, 2),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -120,6 +120,9 @@ class GF_Settings(bpy.types.PropertyGroup):
     trim_cut: bpy.props.BoolProperty(name="切断腕/踝以外(袖口/裤脚)", default=False,
                                      description="危险: 会把袖口以外的衣服布料一起切掉。只有确认衣服里长着"
                                                  "多余的手/脚时才开，并把切断半径调小(5~8cm)")
+    trim_small_v: bpy.props.IntProperty(name="碎块最大顶点数", default=3000, min=50, max=200000,
+                                        description="把独立碎块(与主体不相连)中顶点数小于这个值的小块删掉；"
+                                                    "衣服上多出来的人体零件通常就是这种小块")
     trim_cut_radius: bpy.props.FloatProperty(name="切断半径(cm)", default=15.0, min=3.0, max=30.0, precision=1)
     trim_info: bpy.props.StringProperty(name="上次清理", default="")
 
@@ -1636,6 +1639,44 @@ def shrinkwrap_sleeves(garment, body, armature=None, offset=0.012, mask_w=0.25,
     return {"verts": int(len(idx))}
 
 
+def delete_small_parts(garment, max_verts=3000):
+    """删掉与主体不相连、顶点数 < max_verts 的独立碎块(衣服上多余的人体零件通常就是这种小块)。"""
+    me = garment.data
+    n = len(me.vertices)
+    ne = len(me.edges)
+    ev = np.empty(ne * 2, np.int32)
+    me.edges.foreach_get("vertices", ev)
+    ev = ev.reshape(-1, 2)
+    parent = np.arange(n, dtype=np.int64)
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for a, b in ev:
+        ra, rb = find(int(a)), find(int(b))
+        if ra != rb:
+            parent[rb] = ra
+    roots = np.array([find(i) for i in range(n)])
+    uniq, counts = np.unique(roots, return_counts=True)
+    small_roots = set(int(u) for u, c in zip(uniq, counts) if c < max_verts)
+    if not small_roots:
+        return {"parts": 0, "verts": 0, "left": n}
+    mask = np.isin(roots, list(small_roots))
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    bm.verts.ensure_lookup_table()
+    doomed = [v for v in bm.verts if mask[v.index]]
+    nv = len(doomed)
+    bmesh.ops.delete(bm, geom=doomed, context="VERTS")
+    bm.to_mesh(me)
+    me.update()
+    bm.free()
+    return {"parts": len(small_roots), "verts": nv, "left": len(me.vertices)}
+
+
 # ================================================================== ③ 防穿模
 def fit_penetration(garment, body, gap=0.008, max_push=0.05, progress=None, p0=50, p1=60):
     bv, polys, tree = _body_tree(body)
@@ -2111,6 +2152,39 @@ class GF_OT_delete_selected(bpy.types.Operator):
         self.report({"INFO"}, msg)
         print("[GarmentFit]", msg)
         toast(msg, 4.0)
+        return {"FINISHED"}
+
+
+class GF_OT_delete_small(bpy.types.Operator):
+    """删除衣服上多余的独立碎块（不相连的小块，通常是残留的人体零件）"""
+    bl_idname = "garment_fit.delete_small"
+    bl_label = "删除多余碎块"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        st = context.scene.garment_fit
+        if not st.garment:
+            self.report({"ERROR"}, "请先指定衣服")
+            return {"CANCELLED"}
+        if context.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        pr = GF_Progress(100, "删除多余碎块")
+        try:
+            pr.step(20, "分析连通块")
+            res = delete_small_parts(st.garment, int(st.trim_small_v))
+            pr.end("完成")
+        finally:
+            if pr.wm:
+                try:
+                    pr.wm.progress_end()
+                except Exception:
+                    pass
+            if pr.pct < 0.999:
+                _ov_hide()
+        msg = "删除了 %d 个碎块、%d 个顶点（剩余 %d）" % (res["parts"], res["verts"], res["left"])
+        self.report({"INFO"}, msg)
+        print("[GarmentFit]", msg)
+        toast(msg, 5.0)
         return {"FINISHED"}
 
 
@@ -2608,6 +2682,8 @@ class GF_PT_panel(bpy.types.Panel):
                      text="袖子贴合手臂 (Shrinkwrap)")
         box.operator("garment_fit.delete_selected", icon="X",
                      text="删除选中的多余部位 (编辑模式)")
+        box.operator("garment_fit.delete_small", icon="X",
+                     text="删除多余碎块 (不相连的小块)")
         if st.trim_info:
             box.label(text=st.trim_info, icon="INFO")
 
@@ -2783,7 +2859,7 @@ class GF_PT_export(bpy.types.Panel):
 
 
 CLASSES = (GF_Settings, GF_OT_match, GF_OT_match_loose, GF_OT_scale_match, GF_OT_trim_body,
-           GF_OT_shrink_sleeves, GF_OT_delete_selected,
+           GF_OT_shrink_sleeves, GF_OT_delete_selected, GF_OT_delete_small,
            GF_OT_pose_only, GF_OT_weights_only,
            GF_OT_pick_body, GF_OT_pick_garment, GF_OT_export,
            GF_OT_cloth, GF_OT_restore, GF_OT_report, GF_OT_recenter,
