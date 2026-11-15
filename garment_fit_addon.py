@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 11, 3),
+    "version": (1, 11, 4),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -2721,8 +2721,6 @@ class GF_PT_panel(bpy.types.Panel):
         box = lay.box()
         box.label(text="匹配方向", icon="ARROW_LEFTRIGHT")
         box.row(align=True).prop(st, "match_mode", expand=True)
-        lay.scale_y = 1.7
-        lay.operator("garment_fit.auto", icon="PLAY", text="一键完成 (对齐+匹配+袖子贴合)")
         lay.scale_y = 1.5
         lay.operator("garment_fit.match", icon="MOD_ARMATURE")
         lay.scale_y = 1.2
@@ -2936,7 +2934,7 @@ class GF_PT_export(bpy.types.Panel):
         lay.prop(st, "export_path", text="")
 
 
-CLASSES = (GF_Settings, GF_OT_auto, GF_OT_match, GF_OT_match_loose, GF_OT_scale_match, GF_OT_trim_body,
+CLASSES = (GF_Settings, GF_OT_match, GF_OT_match_loose, GF_OT_scale_match, GF_OT_trim_body,
            GF_OT_shrink_sleeves, GF_OT_delete_selected, GF_OT_delete_small,
            GF_OT_pose_only, GF_OT_weights_only,
            GF_OT_pick_body, GF_OT_pick_garment, GF_OT_export,
