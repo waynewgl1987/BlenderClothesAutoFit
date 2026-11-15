@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 4, 0),
+    "version": (1, 4, 1),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -94,10 +94,10 @@ class GF_Settings(bpy.types.PropertyGroup):
 
     scale_metric: bpy.props.EnumProperty(
         name="缩放基准",
-        items=[("HEIGHT", "按高度", "用世界包围盒高度比；连体衣/全身服最稳"),
-               ("DIAGONAL", "按包围盒对角线", "用包围盒对角线比；上衣/裤子等局部件更稳"),
+        items=[("DIAGONAL", "整体尺寸(对角线)", "用包围盒对角线比；整体体积对得上，默认"),
+               ("HEIGHT", "按高度", "用世界包围盒高度比；只保证高度一致"),
                ("ARM", "按手臂(肩→腕)", "用肩到手腕的长度比；袖口正好落在手腕，不盖手掌")],
-        default="HEIGHT")
+        default="DIAGONAL")
     guard_cuff: bpy.props.BoolProperty(
         name="护手(袖口不盖手掌)", default=True,
         description="缩放时限制比例，让袖口停在手腕以内，不包住手掌")

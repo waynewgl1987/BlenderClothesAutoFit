@@ -53,7 +53,7 @@
 | **人物 → 衣服** | 人物（骨架 + 身体一起） | 衣服是对的，人物比例/单位不对 |
 | **衣服 → 人物** | 衣服几何 | 人物是对的（UE 里的标准角色），衣服是从别处导进来的 |
 
-- **缩放基准**：按高度 / 按包围盒对角线 / 按手臂(肩→腕)；
+- **缩放基准**：整体尺寸（包围盒对角线，默认）/ 按高度 / 按手臂(肩→腕)；
 - **同时对齐位置**：勾上后两个物体的**包围盒中心**重合成同一个点（坐标位置一致）；关掉就只改尺寸、位置保持原样；
 - **护手（袖口不盖手掌）**：缩放前先比"衣服袖口横向到达距离"和"人物手腕距离（肩关节 + 手臂链长，用静止姿势算，和当前 T/A-pose 无关）"，会盖住手掌就自动夹紧比例，面板上提示原始比例和实际比例；
 - 人物的缩放是改 `armature.matrix_world`，导出时会被烘进骨骼和顶点，所以 UE 里是干净的 1:1；
@@ -117,7 +117,7 @@ Blender 的布料解算器**不能**导出到 UE。这一步是把网格准备�
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| 缩放基准 | 按高度 | 连体衣/全身服最稳；上衣/裤子改用「按包围盒对角线」；要袖口正好落在手腕选「按手臂(肩→腕)」 |
+| 缩放基准 | 整体尺寸(对角线) | 包围盒对角线等长 → 整体体积对得上（盔甲/连体服默认）；只想高度一致选「按高度」；要袖口正好落在手腕选「按手臂(肩→腕)」 |
 | 同时对齐位置 | 开 | 两个包围盒中心重合到同一点；关掉只改尺寸 |
 | 护手（袖口不盖手掌） | 开 | 比较衣服袖口横向距离和人物手腕距离，超标自动夹紧，面板显示"应付比例 → 实际比例" |
 
@@ -225,7 +225,7 @@ Two buttons at the top of the panel, *Size match (uniform scale, proportions kep
 | **Character → Garment** | character (armature + body) | the garment is right, the character's scale/units are not |
 | **Garment → Character** | garment geometry | the character is right (your UE hero), the garment came from somewhere else |
 
-- **Scale basis**: height / bounding-box diagonal / arm (shoulder→wrist);
+- **Scale basis**: overall size (bounding-box diagonal, default) / height / arm (shoulder→wrist);
 - **Align positions** (on by default): makes the two bounding-box centers coincide, so both objects share one coordinate frame; turn it off to change size only;
 - **Cuff guard (sleeves must not swallow the palms)**: compares the garment's lateral sleeve reach with the character's wrist reach (shoulder joint + arm chain length, measured in rest pose, so mismatched T/A poses don't fool it) and clamps the factor if needed, reporting both the requested and applied factor;
 - The character is scaled through `armature.matrix_world`, which the FBX export bakes into bones and vertices — clean 1:1 in UE;
@@ -289,7 +289,7 @@ Requirements: Blender **4.2+** (tested on 5.1), NumPy (bundled). No dependencies
 
 | Parameter | Default | Notes |
 |---|---|---|
-| Scale basis | Height | safest for full-body outfits; use *Bounding-box diagonal* for tops/pants; *Arm (shoulder→wrist)* puts the cuffs exactly at the wrists |
+| Scale basis | Overall size (diagonal) | equal bounding-box diagonals → overall bulk matches (default for armour / full suits); *Height* for height only; *Arm (shoulder→wrist)* to land the cuffs on the wrists |
 | Align positions | on | makes both bounding-box centers coincide; off = resize only |
 | Cuff guard | on | compares the garment's sleeve reach with the character's wrist reach and clamps the factor, showing requested vs applied |
 
