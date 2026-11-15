@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 9, 4),
+    "version": (1, 10, 0),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -1559,6 +1559,76 @@ def snap_cuffs_to_arms(garment, armature, strength=1.0, max_move=0.15, tighten=0
     return {"sides": done, "info": info}
 
 
+def shrinkwrap_sleeves(garment, body, armature=None, offset=0.012, mask_w=0.25,
+                       progress=None, p0=10, p1=90):
+    """把袖子那部分布料 Shrinkwrap 到人物手臂表面（+offset），让手臂被真正包住。
+
+    只对"手臂权重 > mask_w"的顶点生效, 其余顶点不动; 结果再用一次轻量平滑,
+    避免逐点吸附产生的锯齿。
+    """
+    FW = _fam_weights(garment)
+    W = _wverts(garment).astype(np.float64)
+    n = len(W)
+    w = np.zeros(n, np.float32)
+    for k in ("upperarm_l", "lowerarm_l", "upperarm_r", "lowerarm_r", "clavicle_l", "clavicle_r"):
+        if k in FW:
+            w = np.maximum(w, FW[k])
+    # 手部权重也算(袖口要包住腕)
+    if armature is not None:
+        names = _find_arm_bones(armature)
+        hand_idx = set()
+        for side in ("l", "r"):
+            hn = names.get("hand_" + side)
+            if hn:
+                g = garment.vertex_groups.get(hn)
+                if g:
+                    hand_idx.add(g.index)
+        if hand_idx:
+            for v in garment.data.vertices:
+                for ge in v.groups:
+                    if ge.group in hand_idx and ge.weight > 0.3:
+                        w[v.index] = max(w[v.index], ge.weight)
+    sel = w > mask_w
+    if int(sel.sum()) < 100:
+        return {"verts": 0}
+
+    bv, polys, tree = _body_tree(body)
+    out = W.copy()
+    idx = np.where(sel)[0]
+    chunk = max(1, len(idx) // 20)
+    for j, i in enumerate(idx):
+        p = Vector(W[i].tolist())
+        loc, nor, fi, dist = tree.find_nearest(p, 0.40)
+        if loc is None:
+            continue
+        tgt = np.array(loc + nor * offset, float)
+        f = min(1.0, float(w[i]) * 1.4)
+        out[i] = W[i] + (tgt - W[i]) * f
+        if progress and j % chunk == 0:
+            progress.step(p0 + (p1 - p0) * j // max(1, len(idx)),
+                          "袖子贴合手臂 %d%%" % (j * 100 // max(1, len(idx))))
+    # 一次轻量平滑(只在袖子区域内)
+    try:
+        ev = np.empty(len(garment.data.edges) * 2, np.int32)
+        garment.data.edges.foreach_get("vertices", ev)
+        ev = ev.reshape(-1, 2)
+        m2 = sel[ev[:, 0]] & sel[ev[:, 1]]
+        e = ev[m2]
+        if len(e):
+            acc = out.copy()
+            cnt = np.ones(len(out), np.float32)
+            np.add.at(acc, e[:, 0], out[e[:, 1]])
+            np.add.at(acc, e[:, 1], out[e[:, 0]])
+            np.add.at(cnt, e[:, 0], 1.0)
+            np.add.at(cnt, e[:, 1], 1.0)
+            sm = acc / cnt[:, None]
+            out[sel] = 0.4 * out[sel] + 0.6 * sm[sel]
+    except Exception as e:
+        print("[GarmentFit] shrink smooth skip:", e)
+    _set_wverts(garment, out)
+    return {"verts": int(len(idx))}
+
+
 # ================================================================== ③ 防穿模
 def fit_penetration(garment, body, gap=0.008, max_push=0.05, progress=None, p0=50, p1=60):
     bv, polys, tree = _body_tree(body)
@@ -1965,6 +2035,47 @@ class GF_OT_match_loose(bpy.types.Operator):
 
     def execute(self, context):
         return run_match(context, self, loose_sleeve=True)
+
+
+class GF_OT_shrink_sleeves(bpy.types.Operator):
+    """把袖子布料收缩包裹到人物手臂上，让手臂被衣服真正包住"""
+    bl_idname = "garment_fit.shrink_sleeves"
+    bl_label = "袖子贴合手臂"
+    bl_description = "对袖子部分做 Shrinkwrap 到人物手臂表面（偏移 1.2 cm）；会改变袖子造型，建议在匹配完成后再用"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        st = context.scene.garment_fit
+        if not st.garment or not st.body:
+            self.report({"ERROR"}, "请先指定 人物身体 和 衣服")
+            return {"CANCELLED"}
+        if not len(st.garment.vertex_groups):
+            self.report({"ERROR"}, "衣服还没有顶点组，请先执行一键匹配")
+            return {"CANCELLED"}
+        if context.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        arm = _arm(st.body, st.armature)
+        pr = GF_Progress(100, "袖子贴合手臂")
+        try:
+            try:
+                res = shrinkwrap_sleeves(st.garment, st.body, arm, 0.008, 0.15, pr, 5, 95)
+            except Exception as e:
+                self.report({"ERROR"}, "贴合失败: %s" % e)
+                return {"CANCELLED"}
+            pr.end("完成")
+        finally:
+            if pr.wm:
+                try:
+                    pr.wm.progress_end()
+                except Exception:
+                    pass
+            if pr.pct < 0.999:
+                _ov_hide()
+        msg = "袖子已贴合手臂（%d 个顶点）" % res.get("verts", 0)
+        self.report({"INFO"}, msg)
+        print("[GarmentFit]", msg)
+        toast(msg, 4.0)
+        return {"FINISHED"}
 
 
 class GF_OT_scale_match(bpy.types.Operator):
@@ -2454,6 +2565,8 @@ class GF_PT_panel(bpy.types.Panel):
                      text="删除多余人体部位 (手/脚/头)")
         box.operator("garment_fit.cloth_prep", icon="MOD_CLOTH",
                      text="布料优化 (焊接+遮罩+低模)")
+        box.operator("garment_fit.shrink_sleeves", icon="MOD_SHRINKWRAP",
+                     text="袖子贴合手臂 (Shrinkwrap)")
         if st.trim_info:
             box.label(text=st.trim_info, icon="INFO")
 
@@ -2629,6 +2742,7 @@ class GF_PT_export(bpy.types.Panel):
 
 
 CLASSES = (GF_Settings, GF_OT_match, GF_OT_match_loose, GF_OT_scale_match, GF_OT_trim_body,
+           GF_OT_shrink_sleeves,
            GF_OT_pose_only, GF_OT_weights_only,
            GF_OT_pick_body, GF_OT_pick_garment, GF_OT_export,
            GF_OT_cloth, GF_OT_restore, GF_OT_report, GF_OT_recenter,
