@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 5, 1),
+    "version": (1, 5, 2),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -1293,12 +1293,14 @@ def fix_arm_pose(garment, body, armature, max_rot=10.0, strength=1.0,
             ang = math.degrees(math.acos(float(np.clip(u @ v, -1, 1))))
             axis = np.cross(u, v)
             ang_eff = min(ang, max_rot)
+            loose_k = 1.0
             if guard:
                 # 袖子越"肥"(布料离骨骼越远), 越不该硬转: 转了就会把大袖摆折出硬褶
                 rel0 = A_full - h
                 rad0 = np.linalg.norm(rel0 - np.outer(rel0 @ d0, d0), axis=1)
                 spread = float(np.percentile(rad0, 90))
-                ang_eff *= float(np.clip((0.13 - spread) / 0.05, 0.0, 1.0))
+                loose_k = float(np.clip((0.13 - spread) / 0.05, 0.0, 1.0))
+                ang_eff *= loose_k
             if part == "clavicle":
                 # 锁骨簇里混着领口/前胸, 一旦旋转就会把领口往下拽 -> 只平移不旋转
                 R = np.eye(3)
@@ -1306,6 +1308,9 @@ def fix_arm_pose(garment, body, armature, max_rot=10.0, strength=1.0,
                 R = np.eye(3) if np.linalg.norm(axis) < 1e-6 or ang_eff < 1e-6 \
                     else _rodrigues(axis, math.radians(ang_eff))
             t = (np.median(B, axis=0) - np.median(A, axis=0)) * STR[part]
+            if guard:
+                # 大袖的"簇中心"离骨骼很远, 直接按中心差平移会把整片袖摆推走 -> 一起阻尼
+                t *= loose_k
             L = float(np.linalg.norm(t))
             if L > max_move:
                 t = t * (max_move / L)
