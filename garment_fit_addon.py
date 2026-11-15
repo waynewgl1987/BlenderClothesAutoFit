@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 11, 2),
+    "version": (1, 11, 3),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -1569,7 +1569,7 @@ def snap_cuffs_to_arms(garment, armature, strength=1.0, max_move=0.15, tighten=0
     return {"sides": done, "info": info}
 
 
-def shrinkwrap_sleeves(garment, body, armature=None, offset=0.012, mask_w=0.25,
+def shrinkwrap_sleeves(garment, body, armature=None, offset=0.008, mask_w=0.60,
                        progress=None, p0=10, p1=90):
     """把袖子那部分布料 Shrinkwrap 到人物手臂表面（+offset），让手臂被真正包住。
 
@@ -1612,7 +1612,7 @@ def shrinkwrap_sleeves(garment, body, armature=None, offset=0.012, mask_w=0.25,
         if loc is None:
             continue
         tgt = np.array(loc + nor * offset, float)
-        f = min(1.0, float(w[i]) * 1.4)
+        f = min(1.0, max(0.0, (float(w[i]) - 0.4) / 0.4))   # 只让"主要属于手臂"的顶点完全贴合
         out[i] = W[i] + (tgt - W[i]) * f
         if progress and j % chunk == 0:
             progress.step(p0 + (p1 - p0) * j // max(1, len(idx)),
@@ -2106,7 +2106,7 @@ class GF_OT_shrink_sleeves(bpy.types.Operator):
         pr = GF_Progress(100, "袖子贴合手臂")
         try:
             try:
-                res = shrinkwrap_sleeves(st.garment, st.body, arm, 0.008, 0.15, pr, 5, 95)
+                res = shrinkwrap_sleeves(st.garment, st.body, arm, 0.008, 0.60, pr, 5, 95)
             except Exception as e:
                 self.report({"ERROR"}, "贴合失败: %s" % e)
                 return {"CANCELLED"}
@@ -2237,7 +2237,7 @@ class GF_OT_auto(bpy.types.Operator):
             for i in range(2):
                 pr.step(5 + i * 45, "贴合第 %d 遍" % (i + 1))
                 try:
-                    shrinkwrap_sleeves(st.garment, st.body, arm, 0.008, 0.15,
+                    shrinkwrap_sleeves(st.garment, st.body, arm, 0.008, 0.60,
                                        pr, 5 + i * 45, 50 + i * 45)
                 except Exception as e:
                     print("[GarmentFit] 贴合失败:", e)
