@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 9, 1),
+    "version": (1, 9, 2),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -132,9 +132,9 @@ class GF_Settings(bpy.types.PropertyGroup):
     arm_iterations: bpy.props.IntProperty(name="迭代次数", default=2, min=1, max=5)
     arm_rigid_chunks: bpy.props.BoolProperty(name="按碎块刚性（无裂缝但会拉开薄片）", default=False)
     cuff_pull_cm: bpy.props.FloatProperty(
-        name="袖口拉向手腕(cm)", default=0.0, min=0.0, max=20.0, precision=1,
-        description="只对「一键匹配（大袖/垂袖）」生效：0 = 不碰袖子（和原版一致）；"
-                    "调大就把袖口平滑拉向手腕，布料会被拉伸")
+        name="袖口拉向手腕(cm)", default=12.0, min=0.0, max=20.0, precision=1,
+        description="只对「一键匹配（大袖/垂袖）」生效：默认 12 = 把袖口拉到接近手腕；"
+                    "0 = 不碰袖子（和原版一致）；调大更贴，但布料拉伸更明显")
     cuff_tighten: bpy.props.FloatProperty(
         name="袖口收紧(大袖)", default=0.0, min=0.0, max=1.0, precision=2,
         description="默认 0 = 完全不改袖口形状；只有当前臂从宽袖口里露出来时才往上调（会改变袖口形状）")
