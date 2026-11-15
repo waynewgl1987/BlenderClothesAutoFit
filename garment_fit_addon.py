@@ -24,7 +24,7 @@ Blender 4.2+ / 5.x      面板: 3D 视图右侧栏 (N) -> "Garment Fit"
 bl_info = {
     "name": "Garment Fit (衣服一键匹配人物)",
     "author": "OpenCode",
-    "version": (1, 11, 0),
+    "version": (1, 4, 3),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Garment Fit",
     "description": "一键把衣服贴合人物、校正手臂姿态、蒙皮、导出 UE FBX；含双向尺寸匹配(护手)",
@@ -43,10 +43,8 @@ from mathutils.interpolate import poly_3d_calc
 
 # ================================================================== 进度
 class GF_Progress:
-    def __init__(self, total=100, title="处理"):
+    def __init__(self, total=100):
         self.total = total
-        self.title = title
-        self.pct = 0.0
         self.wm = bpy.context.window_manager
         try:
             self.wm.progress_begin(0, total)
@@ -60,12 +58,10 @@ class GF_Progress:
                 self.wm.progress_update(pct)
             except Exception:
                 pass
-        self.pct = pct / max(1, self.total)
         st = getattr(bpy.context.scene, "garment_fit", None)
         if st is not None:
-            st.progress = self.pct
+            st.progress = pct / max(1, self.total)
             st.stage = text
-        overlay_progress(self.pct, ("%s · %s" % (self.title, text)) if text else self.title)
         if text:
             print("[GarmentFit %3d%%] %s" % (pct, text))
 
@@ -75,7 +71,6 @@ class GF_Progress:
 
     def end(self, text="完成"):
         self.set(self.total, text)
-        overlay_progress(1.0, "%s · %s" % (self.title, text), hide_after=1.6)
         if self.wm:
             try:
                 self.wm.progress_end()
@@ -117,12 +112,7 @@ class GF_Settings(bpy.types.PropertyGroup):
     trim_feet: bpy.props.BoolProperty(name="脚(脚踝/脚趾)", default=True)
     trim_head: bpy.props.BoolProperty(name="头/脖子", default=False)
     trim_margin: bpy.props.FloatProperty(name="判定距离(mm)", default=10.0, min=1.0, max=100.0, precision=0)
-    trim_cut: bpy.props.BoolProperty(name="切断腕/踝以外(袖口/裤脚)", default=True,
-                                     description="以人物的腕/踝为界，把关节以外、半径内的衣服几何整段切掉"
-                                                 "（v1.4.3 的默认行为：这样才会把长出来的手/脚一起删掉）")
-    trim_small_v: bpy.props.IntProperty(name="碎块最大顶点数", default=3000, min=50, max=200000,
-                                        description="把独立碎块(与主体不相连)中顶点数小于这个值的小块删掉；"
-                                                    "衣服上多出来的人体零件通常就是这种小块")
+    trim_cut: bpy.props.BoolProperty(name="切断腕/踝以外(袖口/裤脚)", default=True)
     trim_cut_radius: bpy.props.FloatProperty(name="切断半径(cm)", default=15.0, min=3.0, max=30.0, precision=1)
     trim_info: bpy.props.StringProperty(name="上次清理", default="")
 
@@ -136,13 +126,6 @@ class GF_Settings(bpy.types.PropertyGroup):
     arm_max_move: bpy.props.FloatProperty(name="最大位移(cm)", default=5.0, min=0.0, max=15.0)
     arm_iterations: bpy.props.IntProperty(name="迭代次数", default=2, min=1, max=5)
     arm_rigid_chunks: bpy.props.BoolProperty(name="按碎块刚性（无裂缝但会拉开薄片）", default=False)
-    cuff_pull_cm: bpy.props.FloatProperty(
-        name="袖口拉向手腕(cm)", default=12.0, min=0.0, max=20.0, precision=1,
-        description="只对「一键匹配（大袖/垂袖）」生效：默认 12 = 把袖口拉到接近手腕；"
-                    "0 = 不碰袖子（和原版一致）；调大更贴，但布料拉伸更明显")
-    cuff_tighten: bpy.props.FloatProperty(
-        name="袖口收紧(大袖)", default=0.0, min=0.0, max=1.0, precision=2,
-        description="默认 0 = 完全不改袖口形状；只有当前臂从宽袖口里露出来时才往上调（会改变袖口形状）")
 
     do_fit: bpy.props.BoolProperty(name="防穿模(推出穿插)", default=True)
     fit_gap: bpy.props.FloatProperty(name="布料间隙", default=0.008, min=0.0, max=0.05,
@@ -596,8 +579,7 @@ def _limb_gates(armature, hands=True, feet=True):
 
 
 def trim_body_parts(garment, body, armature=None, hands=True, feet=True, head=False,
-                    margin=0.01, cut_limbs=True, cut_radius=0.15, cut_len=0.5,
-                    progress=None, p0=5, p1=95):
+                    margin=0.01, cut_limbs=True, cut_radius=0.15, cut_len=0.5):
     """删掉衣服上多余的人体部位。两种判定取并集:
     ① 与人物手/脚/头表面重合的顶点(<= margin);
     ② 腕/踝以外的整段(沿肢体方向 t>0, 且离肢体轴 < cut_radius) —— 连"长出来的手"一起切掉。
@@ -608,9 +590,6 @@ def trim_body_parts(garment, body, armature=None, hands=True, feet=True, head=Fa
     me = garment.data
     if getattr(me, "shape_keys", None) and len(me.shape_keys.key_blocks):
         raise ValueError("衣服有形态键，请先删除形态键再做清理")
-
-    if progress:
-        progress.step(p0, "查找人体部位")
 
     pts = []
     used, missing = [], []
@@ -626,9 +605,6 @@ def trim_body_parts(garment, body, armature=None, hands=True, feet=True, head=Fa
     if not pts and not gates:
         raise ValueError("人物身上找不到手/脚/头对应的顶点组，也没有可用的腕/踝关节")
 
-    if progress:
-        progress.step(p0 + (p1 - p0) // 5, "读取衣服顶点")
-
     n = len(me.vertices)
     co = np.empty(n * 3, np.float32)
     me.vertices.foreach_get("co", co)
@@ -642,15 +618,9 @@ def trim_body_parts(garment, body, armature=None, hands=True, feet=True, head=Fa
         for i in range(len(P)):
             kd.insert(Vector(P[i].tolist()), i)
         kd.balance()
-        nearest = None
         for i in range(n):
             _, _, dist = kd.find(Vector(W[i].astype(float).tolist()))
-            if nearest is None or dist < nearest:
-                nearest = float(dist)
             mask[i] = dist < margin
-        nearest_mm = (nearest or 0.0) * 1000.0
-    else:
-        nearest_mm = None
 
     for nm, o, d, rk in gates:
         rel = W - o
@@ -661,20 +631,11 @@ def trim_body_parts(garment, body, armature=None, hands=True, feet=True, head=Fa
         if nm.startswith("foot"):
             mask |= np.linalg.norm(rel, axis=1) < cut_radius * rk
 
-    if progress:
-        progress.step(p0 + (p1 - p0) * 2 // 3, "筛选中…（%d 个顶点）" % int(mask.sum()))
-
     bm = bmesh.new()
     bm.from_mesh(me)
     bm.verts.ensure_lookup_table()
     doomed = [f for f in bm.faces if any(mask[v.index] for v in f.verts)]
     nf, nv = len(doomed), int(mask.sum())
-    # 安全阀: 一次删掉超过 30% 的网格说明判定离谱(会把整件衣服切掉) -> 拒绝执行
-    if nv > max(2000, int(n * 0.30)):
-        bm.free()
-        raise ValueError("这次判定会删掉 %d 个顶点(%.1f%%)，太多了，可能会把衣服本身切坏。"
-                         "请把「切断半径」调小，或关闭「切断腕/踝以外」只删重合层。"
-                         % (nv, 100.0 * nv / max(1, n)))
     if nf:
         bmesh.ops.delete(bm, geom=doomed, context="FACES")
         loose = [v for v in bm.verts if not v.link_faces]
@@ -685,8 +646,7 @@ def trim_body_parts(garment, body, armature=None, hands=True, feet=True, head=Fa
     bm.free()
     return {"faces": nf, "verts": nv, "parts": used, "missing": missing,
             "gates": len(gates), "margin": margin, "cut_radius": cut_radius,
-            "cut_len": cut_len, "left_faces": len(me.polygons),
-            "nearest_mm": nearest_mm if pts else None}
+            "cut_len": cut_len, "left_faces": len(me.polygons)}
 
 
 # 骨骼命名归一化: 支持 UE / Mixamo / Maya / Unity / 3ds Max 等常见写法
@@ -1327,356 +1287,6 @@ def fix_arm_pose(garment, body, armature, max_rot=10.0, strength=1.0,
     return max(1, iterations)
 
 
-def align_sleeve_to_arm(garment, armature, max_deg=70.0, progress=None, p0=32, p1=46):
-    """把整只袖子**作为刚体**转到人物手臂的"位置+方向"上, 让手落在袖口里。
-
-    - 旋转: 衣服袖子自己的轴(肩端->袖口) 对齐 人体 肩->腕 的轴;
-    - 平移: 袖口环中心 对准 腕点;
-    - 两者都用同一个权重场施加, 袖子内部的顶点位移相同 => 袖口形状刚性保持, 不会被揉;
-      只有肩部一圈过渡带会被拉扯(被衣服挡住, 看不见)。
-    """
-    FW = _fam_weights(garment)
-    W = _wverts(garment).astype(np.float64)
-    FS = _smooth_fam(FW, W, 0.02, 2)
-    bones = _find_arm_bones(armature)
-    mw = armature.matrix_world
-    disp = np.zeros_like(W)
-    done, infos = 0, {}
-    for side in ("l", "r"):
-        bu, bl, bh = (bones.get("upperarm_" + side), bones.get("lowerarm_" + side),
-                      bones.get("hand_" + side))
-        if not bu or not bl:
-            continue
-        sh = np.array(mw @ armature.pose.bones[bu].head, float)
-        el = np.array(mw @ armature.pose.bones[bl].head, float)
-        wr = np.array(mw @ armature.pose.bones[bh].head, float) if bh \
-            else np.array(mw @ armature.pose.bones[bl].tail, float)
-
-        w = np.clip(FS["upperarm_" + side] + FS["lowerarm_" + side], 0.0, 1.0)
-        sel = w > 0.2
-        if int(sel.sum()) < 300:
-            continue
-        A = W[sel]
-        d_arm = wr - sh
-        La = float(np.linalg.norm(d_arm))
-        if La < 1e-6:
-            continue
-        d_arm /= La
-        t = (A - sh) @ d_arm
-        near = A[t <= np.percentile(t, 20)].mean(0)
-        far = A[t >= np.percentile(t, 85)].mean(0)
-        ax = far - near
-        lx = float(np.linalg.norm(ax))
-        if lx < 1e-5:
-            continue
-        ax /= lx
-        ang = math.degrees(math.acos(float(np.clip(ax @ d_arm, -1.0, 1.0))))
-        axis = np.cross(ax, d_arm)
-        if np.linalg.norm(axis) < 1e-6:
-            continue
-        ang_c = min(ang, max_deg)
-        R = _rodrigues(axis / np.linalg.norm(axis), math.radians(ang_c))
-        # 旋转后的袖口中心 -> 腕点
-        cuff = A[t >= np.percentile(t, 88)]
-        cuff_c = cuff.mean(0)
-        target = (R @ (cuff_c - sh)) + sh
-        delta = wr - target
-        dl = float(np.linalg.norm(delta))
-        if dl > 0.30:
-            delta *= 0.30 / dl
-        f = np.clip((w[sel] - 0.25) / 0.45, 0.0, 1.0)
-        f = f * f * (3.0 - 2.0 * f)
-        moved = ((A - sh) @ R.T) + sh + delta
-        disp[sel] += f[:, None] * (moved - A)
-        infos[side] = (ang, ang_c, dl)
-        done += 1
-        if progress:
-            progress.step(p0 + (p1 - p0) * done // 2, "袖子对齐手臂 %s (%.0f°)" % (side, ang_c))
-    if done:
-        _set_wverts(garment, W + disp)
-    return {"sides": done, "info": infos}
-
-
-def translate_sleeves_rigid(garment, armature, max_move=0.08):
-    """大袖专用: 把袖子整体**刚性平移**到人物手腕(不旋转、不收窄, 局部形状完全不变)。"""
-    FW = _fam_weights(garment)
-    W = _wverts(garment).astype(np.float64)
-    FS = _smooth_fam(FW, W, 0.02, 2)
-    bones = _find_arm_bones(armature)
-    mw = armature.matrix_world
-    disp = np.zeros_like(W)
-    for side in ("l", "r"):
-        hb = bones.get("lowerarm_" + side)
-        hd = bones.get("hand_" + side)
-        if not hb or not hd:
-            continue
-        el = np.array(mw @ armature.pose.bones[hb].head, float)
-        wr = np.array(mw @ armature.pose.bones[hd].head, float)
-        d = wr - el
-        L = float(np.linalg.norm(d))
-        if L < 1e-6:
-            continue
-        d /= L
-        w = np.clip(FS["upperarm_" + side] + FS["lowerarm_" + side], 0.0, 1.0)
-        sel = w > 0.35
-        if int(sel.sum()) < 300:
-            continue
-        A = W[sel]
-        t = (A - el) @ d
-        cuff = A[t >= np.percentile(t, 90)]
-        delta = wr - cuff.mean(0)
-        dl = float(np.linalg.norm(delta))
-        if dl < 0.005:
-            continue
-        if dl > max_move:
-            delta *= max_move / dl
-        f = np.clip((w[sel] - 0.35) / 0.2, 0.0, 1.0)
-        f = f * f * (3.0 - 2.0 * f)
-        disp[sel] += f[:, None] * delta
-    _set_wverts(garment, W + disp)
-    return disp
-
-
-# ================================================================== 大袖: 袖口吸附
-def align_sleeves_rigid(garment, armature, strength=1.0, max_deg=55.0,
-                        progress=None, p0=32, p1=46):
-    """大袖/垂袖: 把整只袖子当作刚体绕肩关节转到人物手臂方向上。
-
-    刚体旋转不会改变任何局部形状(袖口、褶子、垂坠都原样), 只在肩部做权重过渡,
-    所以既能让袖子跟着手臂走, 又不会把袖口揉乱。
-    """
-    FW = _fam_weights(garment)
-    W = _wverts(garment).astype(np.float64)
-    FS = _smooth_fam(FW, W, 0.02, 2)
-    bones = _find_arm_bones(armature)
-    mw = armature.matrix_world
-    disp = np.zeros_like(W)
-    done = 0
-    for side in ("l", "r"):
-        bu = bones.get("upperarm_" + side)
-        bl = bones.get("lowerarm_" + side)
-        bh = bones.get("hand_" + side)
-        if not bu or not bl:
-            continue
-        sh = np.array(mw @ armature.pose.bones[bu].head, float)
-        el = np.array(mw @ armature.pose.bones[bl].head, float)
-        wr = np.array(mw @ armature.pose.bones[bh].head, float) if bh \
-            else np.array(mw @ armature.pose.bones[bl].tail, float)
-        w = np.clip(FS["upperarm_" + side] + FS["lowerarm_" + side], 0.0, 1.0)
-        sel = w > 0.25
-        if int(sel.sum()) < 300:
-            continue
-        A = W[sel]
-        # 衣服袖子自己的轴向: 离肩最近的 15% -> 最远的 15%
-        d_body = wr - sh
-        Lb = float(np.linalg.norm(d_body))
-        if Lb < 1e-6:
-            continue
-        d_body /= Lb
-        t = (A - sh) @ d_body
-        near = A[t <= np.percentile(t, 15)].mean(0)
-        far = A[t >= np.percentile(t, 85)].mean(0)
-        ax_g = far - near
-        lg = float(np.linalg.norm(ax_g))
-        if lg < 1e-5:
-            continue
-        ax_g /= lg
-        ang = math.degrees(math.acos(float(np.clip(ax_g @ d_body, -1.0, 1.0))))
-        axis = np.cross(ax_g, d_body)
-        if np.linalg.norm(axis) < 1e-6 or ang < 1.0:
-            continue
-        ang = min(ang * float(strength), max_deg)
-        R = _rodrigues(axis / np.linalg.norm(axis), math.radians(ang))
-        f = np.clip((w[sel] - 0.2) / 0.35, 0.0, 1.0)
-        f = f * f * (3.0 - 2.0 * f)
-        rotated = (R @ (A - sh).T).T + sh
-        disp[sel] += f[:, None] * (rotated - A)
-        done += 1
-        if progress:
-            progress.step(p0 + (p1 - p0) * done // 2, "袖子整体转向手臂 %s" % side)
-    if done:
-        _set_wverts(garment, W + disp)
-    return done
-
-
-def snap_cuffs_to_arms(garment, armature, strength=1.0, max_move=0.15, tighten=0.0,
-                       progress=None, p0=30, p1=45):
-    """大袖/垂袖专用: 只把"袖口那一圈"往人物手腕拉过去。
-
-    不做旋转(旋转会把垂下来的大袖摆折成硬褶), 而是按"沿手臂由内到外的距离"给一个
-    平滑权重, 越靠袖口跟随越多, 肩部完全不动 —— 袖口能扣到手腕上, 形状不会被扭。
-    """
-    FW = _fam_weights(garment)
-    W = _wverts(garment).astype(np.float64)
-    FS = _smooth_fam(FW, W, 0.02, 2)
-    bones = _find_arm_bones(armature)
-    mw = armature.matrix_world
-    disp = np.zeros_like(W)
-    done, info = 0, {}
-    for side in ("l", "r"):
-        hb = bones.get("lowerarm_" + side)
-        hd = bones.get("hand_" + side)
-        if not hb or not hd:
-            continue
-        el = np.array(mw @ armature.pose.bones[hb].head, float)
-        wr = np.array(mw @ armature.pose.bones[hd].head, float)
-        d = wr - el
-        L = float(np.linalg.norm(d))
-        if L < 1e-6:
-            continue
-        d /= L
-        sel = FW["lowerarm_" + side] > 0.4
-        if int(sel.sum()) < 300:
-            continue
-        A = W[sel]
-        t = (A - el) @ d
-        t0 = float(np.percentile(t, 45))
-        t1 = float(t.max())
-        if t1 - t0 < 1e-4:
-            continue
-        cuff = A[t >= np.percentile(t, 90)]
-        C = cuff.mean(0)
-        delta = (wr - C) * float(strength)
-        dl = float(np.linalg.norm(delta))
-        if dl < 0.002:
-            continue
-        if dl > max_move:
-            delta *= max_move / dl
-            dl = max_move
-        f = np.clip((t - t0) / (t1 - t0), 0.0, 1.0)
-        f = f * f * (3.0 - 2.0 * f)                       # smoothstep
-        f *= np.clip((FS["lowerarm_" + side][sel] - 0.15) / 0.5, 0.0, 1.0)
-        disp[sel] += f[:, None] * delta
-
-        if tighten > 1e-4:
-            # 可选: 把靠手臂的那圈布料往手臂轴上收(前臂露出来时才需要)
-            rel = A - el
-            radial = rel - np.outer(t, d)
-            r = np.linalg.norm(radial, axis=1)
-            b0 = np.percentile(t, 40)
-            band = np.clip((t - b0) / max(1e-6, t1 - b0), 0.0, 1.0)
-            band = band * band * (3.0 - 2.0 * band)
-            near = np.clip((0.18 - r) / 0.18, 0.0, 1.0)
-            shrink = np.clip((r - 0.055) / np.maximum(r, 1e-6), 0.0, 1.0)
-            shrink = shrink * band * near * float(tighten)
-            disp[sel] -= radial * shrink[:, None]
-        info[side] = (float(np.linalg.norm(wr - C)), dl)
-        done += 1
-        if progress:
-            progress.step(p0 + (p1 - p0) * done // 2, "袖口吸附 %s" % side)
-    if done:
-        _set_wverts(garment, W + disp)
-    return {"sides": done, "info": info}
-
-
-def shrinkwrap_sleeves(garment, body, armature=None, offset=0.012, mask_w=0.25,
-                       progress=None, p0=10, p1=90):
-    """把袖子那部分布料 Shrinkwrap 到人物手臂表面（+offset），让手臂被真正包住。
-
-    只对"手臂权重 > mask_w"的顶点生效, 其余顶点不动; 结果再用一次轻量平滑,
-    避免逐点吸附产生的锯齿。
-    """
-    FW = _fam_weights(garment)
-    W = _wverts(garment).astype(np.float64)
-    n = len(W)
-    w = np.zeros(n, np.float32)
-    for k in ("upperarm_l", "lowerarm_l", "upperarm_r", "lowerarm_r", "clavicle_l", "clavicle_r"):
-        if k in FW:
-            w = np.maximum(w, FW[k])
-    # 手部权重也算(袖口要包住腕)
-    if armature is not None:
-        names = _find_arm_bones(armature)
-        hand_idx = set()
-        for side in ("l", "r"):
-            hn = names.get("hand_" + side)
-            if hn:
-                g = garment.vertex_groups.get(hn)
-                if g:
-                    hand_idx.add(g.index)
-        if hand_idx:
-            for v in garment.data.vertices:
-                for ge in v.groups:
-                    if ge.group in hand_idx and ge.weight > 0.3:
-                        w[v.index] = max(w[v.index], ge.weight)
-    sel = w > mask_w
-    if int(sel.sum()) < 100:
-        return {"verts": 0}
-
-    bv, polys, tree = _body_tree(body)
-    out = W.copy()
-    idx = np.where(sel)[0]
-    chunk = max(1, len(idx) // 20)
-    for j, i in enumerate(idx):
-        p = Vector(W[i].tolist())
-        loc, nor, fi, dist = tree.find_nearest(p, 0.40)
-        if loc is None:
-            continue
-        tgt = np.array(loc + nor * offset, float)
-        f = min(1.0, float(w[i]) * 1.4)
-        out[i] = W[i] + (tgt - W[i]) * f
-        if progress and j % chunk == 0:
-            progress.step(p0 + (p1 - p0) * j // max(1, len(idx)),
-                          "袖子贴合手臂 %d%%" % (j * 100 // max(1, len(idx))))
-    # 一次轻量平滑(只在袖子区域内)
-    try:
-        ev = np.empty(len(garment.data.edges) * 2, np.int32)
-        garment.data.edges.foreach_get("vertices", ev)
-        ev = ev.reshape(-1, 2)
-        m2 = sel[ev[:, 0]] & sel[ev[:, 1]]
-        e = ev[m2]
-        if len(e):
-            acc = out.copy()
-            cnt = np.ones(len(out), np.float32)
-            np.add.at(acc, e[:, 0], out[e[:, 1]])
-            np.add.at(acc, e[:, 1], out[e[:, 0]])
-            np.add.at(cnt, e[:, 0], 1.0)
-            np.add.at(cnt, e[:, 1], 1.0)
-            sm = acc / cnt[:, None]
-            out[sel] = 0.4 * out[sel] + 0.6 * sm[sel]
-    except Exception as e:
-        print("[GarmentFit] shrink smooth skip:", e)
-    _set_wverts(garment, out)
-    return {"verts": int(len(idx))}
-
-
-def delete_small_parts(garment, max_verts=3000):
-    """删掉与主体不相连、顶点数 < max_verts 的独立碎块(衣服上多余的人体零件通常就是这种小块)。"""
-    me = garment.data
-    n = len(me.vertices)
-    ne = len(me.edges)
-    ev = np.empty(ne * 2, np.int32)
-    me.edges.foreach_get("vertices", ev)
-    ev = ev.reshape(-1, 2)
-    parent = np.arange(n, dtype=np.int64)
-
-    def find(x):
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    for a, b in ev:
-        ra, rb = find(int(a)), find(int(b))
-        if ra != rb:
-            parent[rb] = ra
-    roots = np.array([find(i) for i in range(n)])
-    uniq, counts = np.unique(roots, return_counts=True)
-    small_roots = set(int(u) for u, c in zip(uniq, counts) if c < max_verts)
-    if not small_roots:
-        return {"parts": 0, "verts": 0, "left": n}
-    mask = np.isin(roots, list(small_roots))
-    bm = bmesh.new()
-    bm.from_mesh(me)
-    bm.verts.ensure_lookup_table()
-    doomed = [v for v in bm.verts if mask[v.index]]
-    nv = len(doomed)
-    bmesh.ops.delete(bm, geom=doomed, context="VERTS")
-    bm.to_mesh(me)
-    me.update()
-    bm.free()
-    return {"parts": len(small_roots), "verts": nv, "left": len(me.vertices)}
-
-
 # ================================================================== ③ 防穿模
 def fit_penetration(garment, body, gap=0.008, max_push=0.05, progress=None, p0=50, p1=60):
     bv, polys, tree = _body_tree(body)
@@ -1810,261 +1420,7 @@ def export_fbx(meshes, armature, path, progress=None, p0=90, p1=100):
     return len(copies)
 
 
-# ================================================================== 覆盖层(toast / 进度条)
-# 3D 视图底部画一条覆盖层: 普通提示(toast)或执行中的进度条, 不打断操作。
-_ov = {"handler": None, "text": "", "pct": None, "last": 0.0}
-
-
-def _redraw_3d(force=False):
-    try:
-        for wm in bpy.data.window_managers:
-            for win in wm.windows:
-                scr = win.screen
-                if scr:
-                    for area in scr.areas:
-                        if area.type == "VIEW_3D":
-                            area.tag_redraw()
-    except Exception:
-        pass
-    if force and not bpy.app.background:
-        try:
-            bpy.ops.wm.redraw_timer(type="DRAW_WIN_SWAP", iterations=1)
-        except Exception:
-            pass
-
-
-def _ov_rect(x, y, w, h, color):
-    import gpu
-    from gpu_extras.batch import batch_for_shader
-    shader = gpu.shader.from_builtin("UNIFORM_COLOR")
-    batch = batch_for_shader(shader, "TRI_FAN",
-                             {"pos": [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]})
-    gpu.state.blend_set("ALPHA")
-    shader.bind()
-    shader.uniform_float("color", color)
-    batch.draw(shader)
-    gpu.state.blend_set("NONE")
-
-
-def _ov_draw():
-    import blf
-    try:
-        ctx = bpy.context
-        region = getattr(ctx, "region", None)
-        if region is None:
-            return
-        try:
-            scale = float(ctx.preferences.system.ui_scale)
-        except Exception:
-            scale = 1.0
-        f = 0
-        pct = _ov["pct"]
-        text = _ov["text"]
-
-        if pct is None:                      # 普通提示
-            size = max(12, int(16 * scale))
-            try:
-                blf.size(f, size)
-            except TypeError:
-                blf.size(f, size, 72)
-            tw, _ = blf.dimensions(f, text)
-            x = max(10.0, (region.width - tw) * 0.5)
-            y = 44.0 * scale
-            blf.color(f, 0.0, 0.0, 0.0, 0.9)
-            blf.position(f, x + 2, y - 2, 0)
-            blf.draw(f, text)
-            blf.color(f, 0.55, 1.0, 0.60, 1.0)
-            blf.position(f, x, y, 0)
-            blf.draw(f, text)
-            return
-
-        w = min(560.0 * scale, region.width * 0.6)     # 进度条
-        h = 12.0 * scale
-        x = (region.width - w) * 0.5
-        y = 64.0 * scale
-        label = "%s   %d%%" % (text, int(round(pct * 100)))
-        size = max(12, int(15 * scale))
-        try:
-            blf.size(f, size)
-        except TypeError:
-            blf.size(f, size, 72)
-        tw, _ = blf.dimensions(f, label)
-        tx = max(10.0, (region.width - tw) * 0.5)
-        ty = y + h + 8 * scale
-        blf.color(f, 0.0, 0.0, 0.0, 0.9)
-        blf.position(f, tx + 2, ty - 2, 0)
-        blf.draw(f, label)
-        blf.color(f, 0.85, 0.95, 1.0, 1.0)
-        blf.position(f, tx, ty, 0)
-        blf.draw(f, label)
-        _ov_rect(x - 3 * scale, y - 3 * scale, w + 6 * scale, h + 6 * scale, (0.05, 0.06, 0.07, 0.85))
-        _ov_rect(x, y, w, h, (0.16, 0.18, 0.20, 0.95))
-        if pct > 0:
-            _ov_rect(x, y, max(2 * scale, w * pct), h, (0.30, 0.75, 0.40, 0.95))
-    except Exception:
-        pass
-
-
-def _ov_set(text, pct=None):
-    _ov["text"] = text
-    _ov["pct"] = pct
-    if _ov["handler"] is None:
-        try:
-            _ov["handler"] = bpy.types.SpaceView3D.draw_handler_add(
-                _ov_draw, (), "WINDOW", "POST_PIXEL")
-        except Exception as e:
-            print("[GarmentFit] overlay:", e)
-    _redraw_3d()
-
-
-def _ov_hide():
-    h = _ov["handler"]
-    if h is not None:
-        try:
-            bpy.types.SpaceView3D.draw_handler_remove(h, "WINDOW")
-        except Exception as e:
-            print("[GarmentFit] overlay remove:", e)
-        _ov["handler"] = None
-    _ov["pct"] = None
-    _redraw_3d()
-    return None
-
-
-def toast(text, seconds=5.0):
-    """在 3D 视图底部弹一条提示(不打断操作, seconds 秒后自动消失)"""
-    _ov_set(text, None)
-    try:
-        bpy.app.timers.register(_ov_hide, first_interval=max(0.5, float(seconds)))
-    except Exception as e:
-        print("[GarmentFit] toast:", e)
-
-
-def overlay_progress(pct, text="", hide_after=None):
-    """在 3D 视图底部画执行中的进度条(节流刷新, 不拖慢主任务)"""
-    import time
-    _ov_set(text, max(0.0, min(1.0, float(pct))))
-    now = time.time()
-    if now - _ov["last"] > 0.25:
-        _ov["last"] = now
-        _redraw_3d(force=True)
-    if hide_after:
-        try:
-            bpy.app.timers.register(_ov_hide, first_interval=float(hide_after))
-        except Exception:
-            pass
-
-
 # ================================================================== 操作符
-def run_match(context, op, loose_sleeve=False):
-    """一键匹配的公共实现。
-
-    loose_sleeve=False: 原来的"一键匹配（姿态+蒙皮）", 逻辑完全不变。
-    loose_sleeve=True : "一键匹配（大袖/垂袖）", 在同一套流程之后**多加一步**袖口整体平移,
-                        只作用于低权重过渡带以外的袖子, 且上限 8 cm, 不旋转、不带收窄。
-    """
-    st = context.scene.garment_fit
-    if not st.garment or not st.body:
-        op.report({"ERROR"}, "请先指定 人物身体 和 衣服")
-        return {"CANCELLED"}
-    arm = _arm(st.body, st.armature)
-    if arm is None:
-        op.report({"ERROR"}, "找不到人物骨架")
-        return {"CANCELLED"}
-    if context.mode != "OBJECT":
-        bpy.ops.object.mode_set(mode="OBJECT")
-
-    if st.auto_scale:
-        k = _auto_scale_to_body(st.body, st.garment)
-        if abs(k - 1.0) > 0.03:
-            print("[GarmentFit] 自动缩放衣服 x%.3f" % k)
-    err = _check_scale(st.body, st.garment)
-    if err:
-        op.report({"ERROR"}, err)
-        print("[GarmentFit] ERROR:", err)
-        return {"CANCELLED"}
-
-    # ============ 模式二: 人物匹配衣服 ============
-    if st.match_mode == "BODY":
-        pr = GF_Progress(100, "人物匹配衣服")
-        try:
-            # 先把衣服从骨架上摘下来并保住世界变换, 否则缩放人物时衣服会一起缩,
-            # 两边同比缩放等于没匹配
-            if st.garment.parent == arm:
-                world = st.garment.matrix_world.copy()
-                st.garment.parent = None
-                st.garment.matrix_world = world
-                for m in list(st.garment.modifiers):
-                    if m.type == "ARMATURE":
-                        st.garment.modifiers.remove(m)
-            if st.auto_scale:
-                k = _auto_scale_body(st.body, st.garment, arm)
-                if abs(k - 1.0) > 0.03:
-                    print("[GarmentFit] 人物缩放 x%.3f" % k)
-                    pr.step(10, "人物缩放 x%.3f" % k)
-            pr.step(12, "人物手臂贴合衣服")
-            n = pose_body_to_garment(st.body, st.garment, arm, st.arm_max_rot,
-                                     max(1, st.arm_iterations), pr, 12, 45)
-            if st.bake_body:
-                pr.step(50, "烘焙人物姿势")
-                bake_body_pose(st.body, arm)
-            if st.do_weights:
-                pr.step(60, "传递权重")
-                transfer_weights(st.garment, st.body, st.limit_weights, pr, 60, 92)
-            pr.step(94, "绑定")
-            bind(st.garment, arm)
-            pr.end("完成(人物匹配衣服)")
-            op.report({"INFO"}, "人物匹配衣服: 缩放+手臂调整 %d 次, 顶点组 %d" %
-                      (n, len(st.garment.vertex_groups)))
-        finally:
-            if pr.wm:
-                try:
-                    pr.wm.progress_end()
-                except Exception:
-                    pass
-            if pr.pct < 0.999:
-                _ov_hide()
-        return {"FINISHED"}
-
-    # ============ 模式一(默认): 衣服匹配人物 ============
-    _save_orig(st.garment)
-    pr = GF_Progress(100, "一键匹配" if not loose_sleeve else "一键匹配(大袖/垂袖)")
-    try:
-        if st.do_weights:
-            pr.step(2, "传递权重")
-            transfer_weights(st.garment, st.body, st.limit_weights, pr, 2, 30)
-        if st.do_arm_pose and not loose_sleeve:
-            pr.step(32, "手臂姿态校正")
-            fix_arm_pose(st.garment, st.body, arm, st.arm_max_rot, st.arm_strength,
-                         st.arm_max_move / 100.0, st.arm_iterations,
-                         st.arm_rigid_chunks, st.arm_str_up, st.arm_str_lo,
-                         st.weight_smooth, st.arm_str_cl, pr, 30, 50)
-        if st.do_arm_pose and loose_sleeve:
-            # 大袖/垂袖: 整只袖子刚体对齐到手臂"位置+方向", 手落在袖口里
-            pr.step(32, "袖子对齐手臂")
-            try:
-                align_sleeve_to_arm(st.garment, arm, 70.0, pr, 32, 50)
-            except Exception as e:
-                print("[GarmentFit] 大袖对齐失败:", e)
-        moved = 0
-        if st.do_fit:
-            pr.step(50, "防穿模")
-            moved = fit_penetration(st.garment, st.body, st.fit_gap, st.fit_max_push, pr, 50, 60)
-        pr.step(85, "绑定")
-        bind(st.garment, arm)
-        pr.end("完成")
-        op.report({"INFO"}, "%s: 顶点组 %d, 推出 %d 点" %
-                  (st.garment.name, len(st.garment.vertex_groups), moved))
-    finally:
-        if pr.wm:
-            try:
-                pr.wm.progress_end()
-            except Exception:
-                pass
-        if pr.pct < 0.999:
-            _ov_hide()
-    return {"FINISHED"}
-
-
 class GF_OT_match(bpy.types.Operator):
     """一键: 权重 + 手臂姿态校正 + 防穿模 + 绑定"""
     bl_idname = "garment_fit.match"
@@ -2072,189 +1428,95 @@ class GF_OT_match(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        return run_match(context, self, loose_sleeve=False)
-
-
-class GF_OT_match_loose(bpy.types.Operator):
-    """大袖/垂袖: 只做权重/防穿模/绑定, **完全不碰袖子几何**（袖口形状保持原样, 不会撕/皱）"""
-    bl_idname = "garment_fit.match_loose"
-    bl_label = "一键匹配 (大袖/垂袖)"
-    bl_options = {"REGISTER", "UNDO"}
-
-    def execute(self, context):
-        return run_match(context, self, loose_sleeve=True)
-
-
-class GF_OT_shrink_sleeves(bpy.types.Operator):
-    """把袖子布料收缩包裹到人物手臂上，让手臂被衣服真正包住"""
-    bl_idname = "garment_fit.shrink_sleeves"
-    bl_label = "袖子贴合手臂"
-    bl_description = "对袖子部分做 Shrinkwrap 到人物手臂表面（偏移 1.2 cm）；会改变袖子造型，建议在匹配完成后再用"
-    bl_options = {"REGISTER", "UNDO"}
-
-    def execute(self, context):
         st = context.scene.garment_fit
         if not st.garment or not st.body:
             self.report({"ERROR"}, "请先指定 人物身体 和 衣服")
             return {"CANCELLED"}
-        if not len(st.garment.vertex_groups):
-            self.report({"ERROR"}, "衣服还没有顶点组，请先执行一键匹配")
+        arm = _arm(st.body, st.armature)
+        if arm is None:
+            self.report({"ERROR"}, "找不到人物骨架")
             return {"CANCELLED"}
         if context.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
-        arm = _arm(st.body, st.armature)
-        pr = GF_Progress(100, "袖子贴合手臂")
-        try:
+
+        if st.auto_scale:
+            k = _auto_scale_to_body(st.body, st.garment)
+            if abs(k - 1.0) > 0.03:
+                print("[GarmentFit] 自动缩放衣服 x%.3f" % k)
+        err = _check_scale(st.body, st.garment)
+        if err:
+            self.report({"ERROR"}, err)
+            print("[GarmentFit] ERROR:", err)
+            return {"CANCELLED"}
+
+        # ============ 模式二: 人物匹配衣服 ============
+        if st.match_mode == "BODY":
+            pr = GF_Progress(100)
             try:
-                res = shrinkwrap_sleeves(st.garment, st.body, arm, 0.008, 0.15, pr, 5, 95)
-            except Exception as e:
-                self.report({"ERROR"}, "贴合失败: %s" % e)
-                return {"CANCELLED"}
-            pr.end("完成")
-        finally:
-            if pr.wm:
-                try:
-                    pr.wm.progress_end()
-                except Exception:
-                    pass
-            if pr.pct < 0.999:
-                _ov_hide()
-        msg = "袖子已贴合手臂（%d 个顶点）" % res.get("verts", 0)
-        self.report({"INFO"}, msg)
-        print("[GarmentFit]", msg)
-        toast(msg, 4.0)
-        return {"FINISHED"}
+                # 先把衣服从骨架上摘下来并保住世界变换, 否则缩放人物时衣服会一起缩,
+                # 两边同比缩放等于没匹配
+                if st.garment.parent == arm:
+                    world = st.garment.matrix_world.copy()
+                    st.garment.parent = None
+                    st.garment.matrix_world = world
+                    for m in list(st.garment.modifiers):
+                        if m.type == "ARMATURE":
+                            st.garment.modifiers.remove(m)
+                if st.auto_scale:
+                    k = _auto_scale_body(st.body, st.garment, arm)
+                    if abs(k - 1.0) > 0.03:
+                        print("[GarmentFit] 人物缩放 x%.3f" % k)
+                        pr.step(10, "人物缩放 x%.3f" % k)
+                pr.step(12, "人物手臂贴合衣服")
+                n = pose_body_to_garment(st.body, st.garment, arm, st.arm_max_rot,
+                                         max(1, st.arm_iterations), pr, 12, 45)
+                if st.bake_body:
+                    pr.step(50, "烘焙人物姿势")
+                    bake_body_pose(st.body, arm)
+                if st.do_weights:
+                    pr.step(60, "传递权重")
+                    transfer_weights(st.garment, st.body, st.limit_weights, pr, 60, 92)
+                pr.step(94, "绑定")
+                bind(st.garment, arm)
+                pr.end("完成(人物匹配衣服)")
+                self.report({"INFO"}, "人物匹配衣服: 缩放+手臂调整 %d 次, 顶点组 %d" %
+                            (n, len(st.garment.vertex_groups)))
+            finally:
+                if pr.wm:
+                    try:
+                        pr.wm.progress_end()
+                    except Exception:
+                        pass
+            return {"FINISHED"}
 
-
-class GF_OT_delete_selected(bpy.types.Operator):
-    """删除衣服上选中的多余部位（编辑模式里选好顶点，再点这个）"""
-    bl_idname = "garment_fit.delete_selected"
-    bl_label = "删除选中的多余部位"
-    bl_description = "在编辑模式里选中衣服上多余的人体零件（手/脚等），点这个把选中的顶点/面删掉"
-    bl_options = {"REGISTER", "UNDO"}
-
-    def execute(self, context):
-        st = context.scene.garment_fit
-        g = context.object if context.mode == "EDIT" else st.garment
-        if context.mode != "EDIT" or g is None or g.type != "MESH":
-            self.report({"ERROR"}, "请先选中衣服 → 进入编辑模式 → 选中要删除的顶点")
-            return {"CANCELLED"}
-        import bmesh
-        bm = bmesh.from_edit_mesh(g.data)
-        sel = [v for v in bm.verts if v.select]
-        if not sel:
-            self.report({"ERROR"}, "编辑模式里没有选中的顶点")
-            return {"CANCELLED"}
-        n = len(sel)
-        bmesh.ops.delete(bm, geom=sel, context="VERTS")
-        bmesh.update_edit_mesh(g.data)
-        msg = "已删除选中的 %d 个顶点（剩余 %d）" % (n, len(g.data.vertices))
-        self.report({"INFO"}, msg)
-        print("[GarmentFit]", msg)
-        toast(msg, 4.0)
-        return {"FINISHED"}
-
-
-class GF_OT_delete_small(bpy.types.Operator):
-    """删除衣服上多余的独立碎块（不相连的小块，通常是残留的人体零件）"""
-    bl_idname = "garment_fit.delete_small"
-    bl_label = "删除多余碎块"
-    bl_options = {"REGISTER", "UNDO"}
-
-    def execute(self, context):
-        st = context.scene.garment_fit
-        if not st.garment:
-            self.report({"ERROR"}, "请先指定衣服")
-            return {"CANCELLED"}
-        if context.mode != "OBJECT":
-            bpy.ops.object.mode_set(mode="OBJECT")
-        pr = GF_Progress(100, "删除多余碎块")
+        # ============ 模式一(默认): 衣服匹配人物 ============
+        _save_orig(st.garment)
+        pr = GF_Progress(100)
         try:
-            pr.step(20, "分析连通块")
-            res = delete_small_parts(st.garment, int(st.trim_small_v))
+            if st.do_weights:
+                pr.step(2, "传递权重")
+                transfer_weights(st.garment, st.body, st.limit_weights, pr, 2, 30)
+            if st.do_arm_pose:
+                pr.step(32, "手臂姿态校正")
+                fix_arm_pose(st.garment, st.body, arm, st.arm_max_rot, st.arm_strength,
+                             st.arm_max_move / 100.0, st.arm_iterations,
+                             st.arm_rigid_chunks, st.arm_str_up, st.arm_str_lo,
+                             st.weight_smooth, st.arm_str_cl, pr, 30, 50)
+            moved = 0
+            if st.do_fit:
+                pr.step(50, "防穿模")
+                moved = fit_penetration(st.garment, st.body, st.fit_gap, st.fit_max_push, pr, 50, 60)
+            pr.step(85, "绑定")
+            bind(st.garment, arm)
             pr.end("完成")
+            self.report({"INFO"}, "%s: 顶点组 %d, 推出 %d 点" %
+                        (st.garment.name, len(st.garment.vertex_groups), moved))
         finally:
             if pr.wm:
                 try:
                     pr.wm.progress_end()
                 except Exception:
                     pass
-            if pr.pct < 0.999:
-                _ov_hide()
-        msg = "删除了 %d 个碎块、%d 个顶点（剩余 %d）" % (res["parts"], res["verts"], res["left"])
-        self.report({"INFO"}, msg)
-        print("[GarmentFit]", msg)
-        toast(msg, 5.0)
-        return {"FINISHED"}
-
-
-class GF_OT_auto(bpy.types.Operator):
-    """一键完成：对齐位置 → 一键匹配（姿态+蒙皮）→ 袖子贴合手臂 ×2"""
-    bl_idname = "garment_fit.auto"
-    bl_label = "一键完成 (对齐+匹配+袖子贴合)"
-    bl_description = "按顺序自动执行：把衣服对齐到人物中心 → 权重/姿态/防穿模/绑定 → 袖子贴合手臂两次"
-    bl_options = {"REGISTER", "UNDO"}
-
-    def execute(self, context):
-        st = context.scene.garment_fit
-        if not st.body or not st.garment:
-            self.report({"ERROR"}, "请先指定 人物身体 和 衣服")
-            return {"CANCELLED"}
-        if st.body == st.garment:
-            self.report({"ERROR"}, "身体和衣服不能是同一个物体")
-            return {"CANCELLED"}
-        if context.mode != "OBJECT":
-            bpy.ops.object.mode_set(mode="OBJECT")
-
-        # ---- 1) 对齐到人物中心 ----
-        pr = GF_Progress(100, "一键完成")
-        try:
-            pr.step(3, "对齐到人物中心")
-            Wb = _wverts(st.body).astype(np.float64)
-            Wg = _wverts(st.garment).astype(np.float64)
-            delta = _bbox_stats(Wb)[3] - _bbox_stats(Wg)[3]
-            if float(np.linalg.norm(delta)) > 1e-6:
-                _write_world(st.garment, Wg + delta)
-                st.garment.update_tag()
-            pr.step(8, "对齐完成（%.1f cm）" % (float(np.linalg.norm(delta)) * 100))
-        finally:
-            if pr.wm:
-                try:
-                    pr.wm.progress_end()
-                except Exception:
-                    pass
-            _ov_hide()
-
-        # ---- 2) 一键匹配(原流程) ----
-        res = run_match(context, self, loose_sleeve=False)
-        if res != {"FINISHED"}:
-            return res
-
-        # ---- 3) 袖子贴合手臂 x2 ----
-        arm = _arm(st.body, st.armature)
-        pr = GF_Progress(100, "袖子贴合手臂")
-        try:
-            for i in range(2):
-                pr.step(5 + i * 45, "贴合第 %d 遍" % (i + 1))
-                try:
-                    shrinkwrap_sleeves(st.garment, st.body, arm, 0.008, 0.15,
-                                       pr, 5 + i * 45, 50 + i * 45)
-                except Exception as e:
-                    print("[GarmentFit] 贴合失败:", e)
-                    break
-            pr.end("完成")
-        finally:
-            if pr.wm:
-                try:
-                    pr.wm.progress_end()
-                except Exception:
-                    pass
-            if pr.pct < 0.999:
-                _ov_hide()
-        msg = "一键完成：对齐 + 匹配 + 袖子贴合 2 遍"
-        st.stage = msg
-        self.report({"INFO"}, msg)
-        toast(msg, 5.0)
         return {"FINISHED"}
 
 
@@ -2283,37 +1545,24 @@ class GF_OT_scale_match(bpy.types.Operator):
             bpy.ops.object.mode_set(mode="OBJECT")
 
         arm = _arm(st.body, st.armature)
-        pr = GF_Progress(100, "尺寸匹配")
         try:
-            try:
-                pr.step(10, "测量尺寸")
-                if self.direction == "GARMENT":
-                    res = scale_garment_to_body(st.body, st.garment, arm,
-                                                st.scale_metric, st.guard_cuff,
-                                                st.align_positions)
-                    who = "衣服 → 人物"
-                else:
-                    if arm is None:
-                        self.report({"ERROR"}, "找不到人物骨架，无法缩放人物")
-                        return {"CANCELLED"}
-                    res = scale_body_to_garment(st.body, st.garment, arm,
-                                                st.scale_metric, st.guard_cuff,
-                                                st.align_positions)
-                    who = "人物 → 衣服"
-                pr.step(90, "写入缩放")
-            except ValueError as e:
-                self.report({"ERROR"}, str(e))
-                print("[GarmentFit] 尺寸匹配失败:", e)
-                return {"CANCELLED"}
-            pr.end("完成")
-        finally:
-            if pr.wm:
-                try:
-                    pr.wm.progress_end()
-                except Exception:
-                    pass
-            if pr.pct < 0.999:
-                _ov_hide()
+            if self.direction == "GARMENT":
+                res = scale_garment_to_body(st.body, st.garment, arm,
+                                            st.scale_metric, st.guard_cuff,
+                                            st.align_positions)
+                who = "衣服 → 人物"
+            else:
+                if arm is None:
+                    self.report({"ERROR"}, "找不到人物骨架，无法缩放人物")
+                    return {"CANCELLED"}
+                res = scale_body_to_garment(st.body, st.garment, arm,
+                                            st.scale_metric, st.guard_cuff,
+                                            st.align_positions)
+                who = "人物 → 衣服"
+        except ValueError as e:
+            self.report({"ERROR"}, str(e))
+            print("[GarmentFit] 尺寸匹配失败:", e)
+            return {"CANCELLED"}
 
         msg = "%s x%.3f" % (who, res["k"])
         if res.get("capped"):
@@ -2328,7 +1577,6 @@ class GF_OT_scale_match(bpy.types.Operator):
         st.stage = "尺寸匹配: " + msg
         self.report({"INFO"}, msg)
         print("[GarmentFit] 尺寸匹配:", msg)
-        toast("尺寸匹配完成: " + msg, 5.0)
         return {"FINISHED"}
 
 
@@ -2351,33 +1599,19 @@ class GF_OT_trim_body(bpy.types.Operator):
             bpy.ops.object.mode_set(mode="OBJECT")
 
         arm = _arm(st.body, st.armature)
-        pr = GF_Progress(100, "清理人体部位")
         try:
-            try:
-                res = trim_body_parts(st.garment, st.body, arm, st.trim_hands,
-                                      st.trim_feet, st.trim_head,
-                                      st.trim_margin / 1000.0,
-                                      st.trim_cut, st.trim_cut_radius / 100.0,
-                                      progress=pr, p0=5, p1=90)
-            except ValueError as e:
-                self.report({"ERROR"}, str(e))
-                print("[GarmentFit] 清理失败:", e)
-                return {"CANCELLED"}
-        finally:
-            if pr.wm:
-                try:
-                    pr.wm.progress_end()
-                except Exception:
-                    pass
-            if pr.pct < 0.999:
-                _ov_hide()
+            res = trim_body_parts(st.garment, st.body, arm, st.trim_hands,
+                                  st.trim_feet, st.trim_head,
+                                  st.trim_margin / 1000.0,
+                                  st.trim_cut, st.trim_cut_radius / 100.0)
+        except ValueError as e:
+            self.report({"ERROR"}, str(e))
+            print("[GarmentFit] 清理失败:", e)
+            return {"CANCELLED"}
 
         if res["faces"] == 0:
-            msg = "没找到与人物重合的部位（容差 %.0f mm，最近距离见下）" % (res["margin"] * 1000.0)
-            if res.get("nearest_mm") is not None:
-                msg = "没找到比 %.0f mm 更近的重合部位（最近距离 %.1f mm）" % (
-                    res["margin"] * 1000.0, res["nearest_mm"])
-            if res["gates"] == 0 and st.trim_cut:
+            msg = "没找到与人物重合的部位（容差 %.0f mm）" % (res["margin"] * 1000.0)
+            if res["gates"] == 0:
                 msg += " · 没找到骨架的腕/踝关节"
         else:
             msg = "删除 %d 面，剩 %d 面（容差 %.0f mm，切断半径 %.0f cm）" % (
@@ -2389,7 +1623,6 @@ class GF_OT_trim_body(bpy.types.Operator):
         st.stage = "清理人体部位: " + msg
         self.report({"INFO"}, msg)
         print("[GarmentFit] 清理人体部位:", msg)
-        toast("清理完成: " + msg, 5.0)
         return {"FINISHED"}
 
 
@@ -2410,7 +1643,7 @@ class GF_OT_pose_only(bpy.types.Operator):
         if not len(st.garment.vertex_groups):
             self.report({"ERROR"}, "衣服还没有顶点组，请先执行一键匹配或仅权重")
             return {"CANCELLED"}
-        pr = GF_Progress(100, "手臂姿态校正")
+        pr = GF_Progress(100)
         try:
             fix_arm_pose(st.garment, st.body, arm, st.arm_max_rot, st.arm_strength,
                          st.arm_max_move / 100.0, st.arm_iterations,
@@ -2420,9 +1653,6 @@ class GF_OT_pose_only(bpy.types.Operator):
         finally:
             if pr.wm:
                 pr.wm.progress_end()
-            if pr.pct < 0.999:
-                _ov_hide()
-        toast("手臂姿态校正完成", 4.0)
         return {"FINISHED"}
 
 
@@ -2440,7 +1670,7 @@ class GF_OT_weights_only(bpy.types.Operator):
         if arm is None:
             self.report({"ERROR"}, "找不到骨架")
             return {"CANCELLED"}
-        pr = GF_Progress(100, "传递权重")
+        pr = GF_Progress(100)
         try:
             transfer_weights(st.garment, st.body, st.limit_weights, pr, 0, 90)
             bind(st.garment, arm)
@@ -2448,9 +1678,6 @@ class GF_OT_weights_only(bpy.types.Operator):
         finally:
             if pr.wm:
                 pr.wm.progress_end()
-            if pr.pct < 0.999:
-                _ov_hide()
-        toast("权重传递 + 绑定完成（%d 个顶点组）" % len(st.garment.vertex_groups), 4.0)
         return {"FINISHED"}
 
 
@@ -2515,7 +1742,7 @@ class GF_OT_export(bpy.types.Operator):
             self.report({"ERROR"}, "当前导出范围里没有网格")
             return {"CANCELLED"}
 
-        pr = GF_Progress(100, "导出 FBX")
+        pr = GF_Progress(100)
         exported = []
         try:
             sim = None
@@ -2549,13 +1776,6 @@ class GF_OT_export(bpy.types.Operator):
         for count, path in exported:
             self.report({"INFO"}, "已导出 %d 个网格 -> %s" % (count, bpy.path.abspath(path)))
             print("[GarmentFit] exported", count, "meshes ->", bpy.path.abspath(path))
-
-        try:
-            names = ", ".join(bpy.path.basename(bpy.path.abspath(p)) for _, p in exported)
-            total = sum(n for n, _ in exported)
-            toast("导出成功: %s (%d 个网格)" % (names, total), 6.0)
-        except Exception as e:
-            print("[GarmentFit] toast export:", e)
         return {"FINISHED"}
 
 
@@ -2573,7 +1793,7 @@ class GF_OT_cloth(bpy.types.Operator):
         if context.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
         arm = _arm(st.body, st.armature) if st.body else st.armature
-        pr = GF_Progress(100, "布料优化")
+        pr = GF_Progress(100)
         try:
             res = cloth_prep(st.garment, arm, st.weld_mm / 1000.0, st.sim_tris,
                              st.make_sim_mesh, st.pin_top / 100.0,
@@ -2586,8 +1806,6 @@ class GF_OT_cloth(bpy.types.Operator):
                     pr.wm.progress_end()
                 except Exception:
                     pass
-            if pr.pct < 0.999:
-                _ov_hide()
         msg = ("碎块 %d→%d | 顶点 %d→%d | 面 %d→%d | 可模拟占比 %.0f%%"
                % (res["shells"][0], res["shells"][1], res["verts"][0], res["verts"][1],
                   res["tris"][0], res["tris"][1], res["sim_ratio"] * 100))
@@ -2611,10 +1829,8 @@ class GF_OT_restore(bpy.types.Operator):
             return {"CANCELLED"}
         if _restore_orig(st.garment):
             self.report({"INFO"}, "已还原到原始几何")
-            toast("已还原到原始几何", 4.0)
         else:
             self.report({"WARNING"}, "没有找到原始几何快照")
-            toast("没有找到原始几何快照", 4.0)
         return {"FINISHED"}
 
 
@@ -2633,58 +1849,6 @@ class GF_OT_report(bpy.types.Operator):
             len(g.data.vertices), len(g.vertex_groups), "有" if has_arm else "无", weighted)
         self.report({"INFO"}, msg)
         print("[GarmentFit]", g.name, msg)
-        toast(msg, 6.0)
-        return {"FINISHED"}
-
-
-class GF_OT_recenter(bpy.types.Operator):
-    """快速把衣服的位置重置到人物中心（只改位置，不改尺寸/旋转）"""
-    bl_idname = "garment_fit.recenter"
-    bl_label = "对齐到人物中心"
-    bl_description = "把衣服的包围盒中心平移到人物包围盒中心（只移动位置，不改大小）"
-    bl_options = {"REGISTER", "UNDO"}
-
-    def execute(self, context):
-        st = context.scene.garment_fit
-        if not st.body or not st.garment:
-            self.report({"ERROR"}, "请先指定 人物身体 和 衣服")
-            return {"CANCELLED"}
-        if st.body == st.garment:
-            self.report({"ERROR"}, "身体和衣服不能是同一个物体")
-            return {"CANCELLED"}
-        if context.mode != "OBJECT":
-            bpy.ops.object.mode_set(mode="OBJECT")
-
-        dist = 0.0
-        pr = GF_Progress(100, "对齐到人物中心")
-        try:
-            pr.step(10, "测量包围盒中心")
-            Wb = _wverts(st.body).astype(np.float64)
-            Wg = _wverts(st.garment).astype(np.float64)
-            cb = _bbox_stats(Wb)[3]
-            cg = _bbox_stats(Wg)[3]
-            delta = cb - cg
-            dist = float(np.linalg.norm(delta))
-            pr.step(60, "移动 %.1f cm" % (dist * 100))
-            if dist > 1e-6:
-                _write_world(st.garment, Wg + delta)
-                st.garment.update_tag()
-            pr.end("完成")
-        finally:
-            if pr.wm:
-                try:
-                    pr.wm.progress_end()
-                except Exception:
-                    pass
-            if pr.pct < 0.999:
-                _ov_hide()
-
-        msg = ("已对齐到人物中心（移动 %.1f cm）" % (dist * 100)) if dist > 0.0005 \
-            else "衣服已经在人物中心（0 cm）"
-        st.stage = msg
-        self.report({"INFO"}, msg)
-        print("[GarmentFit]", msg)
-        toast(msg, 4.0)
         return {"FINISHED"}
 
 
@@ -2700,7 +1864,16 @@ class GF_PT_panel(bpy.types.Panel):
         st = context.scene.garment_fit
         lay = self.layout
 
-        # ---- 对象(必须先选) ----
+        box = lay.box()
+        box.label(text="匹配方向", icon="ARROW_LEFTRIGHT")
+        col = box.column()
+        col.row(align=True).prop(st, "match_mode", expand=True)
+        if st.match_mode == "BODY":
+            box.label(text="改人物尺寸/手臂姿势，衣服几何不动", icon="INFO")
+            box.prop(st, "bake_body")
+        else:
+            box.label(text="改衣服几何去贴合人物（默认）", icon="INFO")
+
         box = lay.box()
         box.label(text="对象", icon="OBJECT_DATA")
         row = box.row(align=True)
@@ -2710,106 +1883,47 @@ class GF_PT_panel(bpy.types.Panel):
         row.prop(st, "garment", text="衣服")
         row.operator("garment_fit.pick_garment", text="", icon="EYEDROPPER")
         box.prop(st, "armature", text="骨架")
+        box.prop(st, "auto_scale")
 
-        # ---- 方向 + 主按钮 ----
         box = lay.box()
-        box.label(text="匹配方向", icon="ARROW_LEFTRIGHT")
-        box.row(align=True).prop(st, "match_mode", expand=True)
-        lay.scale_y = 1.7
-        lay.operator("garment_fit.auto", icon="PLAY", text="一键完成 (对齐+匹配+袖子贴合)")
-        lay.scale_y = 1.5
-        lay.operator("garment_fit.match", icon="MOD_ARMATURE")
-        lay.scale_y = 1.2
-        lay.operator("garment_fit.match_loose", icon="MOD_CLOTH",
-                     text="一键匹配 (大袖/垂袖)")
-        lay.scale_y = 1.0
-        row = lay.row(align=True)
-        row.operator("garment_fit.arm_pose", icon="FILE_REFRESH")
-        row.operator("garment_fit.weights_only", icon="GROUP_VERTEX")
-        row = lay.row(align=True)
-        row.operator("garment_fit.restore_orig", icon="LOOP_BACK")
-        row.operator("garment_fit.report", icon="INFO")
-
-        # ---- 尺寸匹配 ----
-        box = lay.box()
-        box.label(text="尺寸匹配 (统一缩放)", icon="FULLSCREEN_ENTER")
+        box.label(text="尺寸匹配 (统一缩放, 比例不变)", icon="FULLSCREEN_ENTER")
+        box.prop(st, "scale_metric", text="基准")
         row = box.row(align=True)
         op = row.operator("garment_fit.scale_match", text="人物 → 衣服")
         op.direction = "BODY"
         op = row.operator("garment_fit.scale_match", text="衣服 → 人物")
         op.direction = "GARMENT"
-        box.operator("garment_fit.recenter", icon="SNAP_ON",
-                     text="对齐到人物中心 (只移位置)")
+        box.prop(st, "guard_cuff")
+        box.prop(st, "align_positions")
         if st.scale_info:
             box.label(text=st.scale_info, icon="CHECKMARK")
 
-        # ---- 清理 / 布料 ----
         box = lay.box()
-        box.label(text="清理 / 布料", icon="TRASH")
-        box.operator("garment_fit.trim_body", icon="TRASH",
-                     text="删除多余人体部位 (手/脚/头)")
-        box.operator("garment_fit.cloth_prep", icon="MOD_CLOTH",
-                     text="布料优化 (焊接+遮罩+低模)")
-        box.operator("garment_fit.shrink_sleeves", icon="MOD_SHRINKWRAP",
-                     text="袖子贴合手臂 (Shrinkwrap)")
-        box.operator("garment_fit.delete_selected", icon="X",
-                     text="删除选中的多余部位 (编辑模式)")
-        box.operator("garment_fit.delete_small", icon="X",
-                     text="删除多余碎块 (不相连的小块)")
+        box.label(text="清理多余人体部位", icon="TRASH")
+        row = box.row(align=True)
+        row.prop(st, "trim_hands")
+        row.prop(st, "trim_feet")
+        row.prop(st, "trim_head")
+        box.prop(st, "trim_margin")
+        box.prop(st, "trim_cut")
+        col = box.column(align=True)
+        col.enabled = st.trim_cut
+        col.prop(st, "trim_cut_radius")
+        box.operator("garment_fit.trim_body", icon="TRASH", text="删除衣服上的手/脚/头")
         if st.trim_info:
             box.label(text=st.trim_info, icon="INFO")
 
-        # ---- 进度(只在执行中出现, 跑完自动隐藏) ----
-        if st.stage and st.progress < 0.999:
-            box = lay.box()
-            box.prop(st, "progress", text="%.0f%%" % (st.progress * 100), slider=True)
-            box.label(text=st.stage, icon="TIME")
-
-        # ---- 导出 ----
-        lay.separator()
-        lay.scale_y = 1.3
-        lay.operator("garment_fit.export_fbx", icon="FILE_TICK", text="导出 FBX (给 UE5)")
-        lay.scale_y = 1.0
-        lay.label(text="展开下方折叠项可调参数", icon="TRIA_DOWN")
-
-
-class GF_PT_match_opts(bpy.types.Panel):
-    bl_label = "匹配 / 蒙皮选项"
-    bl_idname = "GF_PT_match_opts"
-    bl_parent_id = "GF_PT_panel"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "Garment Fit"
-    bl_options = {"DEFAULT_CLOSED"}
-    bl_order = 0
-
-    def draw(self, context):
-        st = context.scene.garment_fit
-        lay = self.layout
-        lay.prop(st, "auto_scale")
-        if st.match_mode == "BODY":
-            lay.prop(st, "bake_body")
-        lay.prop(st, "do_weights")
-        col = lay.column(align=True)
+        box = lay.box()
+        box.label(text="蒙皮", icon="ARMATURE_DATA")
+        box.prop(st, "do_weights")
+        col = box.column(align=True)
         col.enabled = st.do_weights
         col.prop(st, "limit_weights")
 
-
-class GF_PT_arm(bpy.types.Panel):
-    bl_label = "手臂姿态校正参数"
-    bl_idname = "GF_PT_arm"
-    bl_parent_id = "GF_PT_panel"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "Garment Fit"
-    bl_options = {"DEFAULT_CLOSED"}
-    bl_order = 1
-
-    def draw(self, context):
-        st = context.scene.garment_fit
-        lay = self.layout
-        lay.prop(st, "do_arm_pose")
-        col = lay.column(align=True)
+        box = lay.box()
+        box.label(text="手臂姿态校正 (POSE 不匹配)", icon="BONE_DATA")
+        box.prop(st, "do_arm_pose")
+        col = box.column(align=True)
         col.enabled = st.do_arm_pose
         col.prop(st, "weight_smooth")
         col.prop(st, "arm_max_rot")
@@ -2820,85 +1934,21 @@ class GF_PT_arm(bpy.types.Panel):
         col.prop(st, "arm_str_lo")
         col.prop(st, "arm_iterations")
         col.prop(st, "arm_rigid_chunks")
+        box.operator("garment_fit.arm_pose", icon="FILE_REFRESH")
 
+        if st.match_mode == "GARMENT":
+            box = lay.box()
+            box.label(text="防穿模", icon="MOD_SHRINKWRAP")
+            box.prop(st, "do_fit")
+            col = box.column(align=True)
+            col.enabled = st.do_fit
+            col.prop(st, "fit_gap")
+            col.prop(st, "fit_max_push")
 
-class GF_PT_fit(bpy.types.Panel):
-    bl_label = "防穿模参数"
-    bl_idname = "GF_PT_fit"
-    bl_parent_id = "GF_PT_panel"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "Garment Fit"
-    bl_options = {"DEFAULT_CLOSED"}
-    bl_order = 2
-
-    def draw(self, context):
-        st = context.scene.garment_fit
-        lay = self.layout
-        lay.prop(st, "do_fit")
-        col = lay.column(align=True)
-        col.enabled = st.do_fit
-        col.prop(st, "fit_gap")
-        col.prop(st, "fit_max_push")
-
-
-class GF_PT_scale(bpy.types.Panel):
-    bl_label = "尺寸匹配设置"
-    bl_idname = "GF_PT_scale"
-    bl_parent_id = "GF_PT_panel"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "Garment Fit"
-    bl_options = {"DEFAULT_CLOSED"}
-    bl_order = 3
-
-    def draw(self, context):
-        st = context.scene.garment_fit
-        lay = self.layout
-        lay.prop(st, "scale_metric", text="基准")
-        lay.prop(st, "guard_cuff")
-        lay.prop(st, "align_positions")
-
-
-class GF_PT_trim(bpy.types.Panel):
-    bl_label = "清理设置"
-    bl_idname = "GF_PT_trim"
-    bl_parent_id = "GF_PT_panel"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "Garment Fit"
-    bl_options = {"DEFAULT_CLOSED"}
-    bl_order = 4
-
-    def draw(self, context):
-        st = context.scene.garment_fit
-        lay = self.layout
-        row = lay.row(align=True)
-        row.prop(st, "trim_hands")
-        row.prop(st, "trim_feet")
-        row.prop(st, "trim_head")
-        lay.prop(st, "trim_margin")
-        lay.prop(st, "trim_cut")
-        col = lay.column(align=True)
-        col.enabled = st.trim_cut
-        col.prop(st, "trim_cut_radius")
-
-
-class GF_PT_cloth(bpy.types.Panel):
-    bl_label = "布料预处理设置"
-    bl_idname = "GF_PT_cloth"
-    bl_parent_id = "GF_PT_panel"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "Garment Fit"
-    bl_options = {"DEFAULT_CLOSED"}
-    bl_order = 5
-
-    def draw(self, context):
-        st = context.scene.garment_fit
-        lay = self.layout
-        lay.prop(st, "do_cloth")
-        col = lay.column(align=True)
+        box = lay.box()
+        box.label(text="布料预处理 (给 UE Chaos Cloth)", icon="MOD_CLOTH")
+        box.prop(st, "do_cloth")
+        col = box.column(align=True)
         col.enabled = st.do_cloth
         col.prop(st, "weld_mm")
         col.prop(st, "make_sim_mesh")
@@ -2907,36 +1957,38 @@ class GF_PT_cloth(bpy.types.Panel):
         col.prop(st, "pin_waist_ratio")
         col.prop(st, "pin_shoulder")
         col.prop(st, "mask_smooth")
+        box.operator("garment_fit.cloth_prep", icon="MOD_CLOTH",
+                     text="布料优化（焊接+遮罩+低模）")
 
+        lay.separator()
+        lay.scale_y = 1.4
+        lay.operator("garment_fit.match", icon="MOD_ARMATURE")
+        lay.scale_y = 1.0
+        lay.operator("garment_fit.weights_only", icon="GROUP_VERTEX")
+        lay.operator("garment_fit.restore_orig", icon="LOOP_BACK")
+        lay.operator("garment_fit.report", icon="INFO")
 
-class GF_PT_export(bpy.types.Panel):
-    bl_label = "导出设置"
-    bl_idname = "GF_PT_export"
-    bl_parent_id = "GF_PT_panel"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "Garment Fit"
-    bl_options = {"DEFAULT_CLOSED"}
-    bl_order = 6
+        box = lay.box()
+        box.label(text="进度", icon="TIME")
+        box.prop(st, "progress", text="%.0f%%" % (st.progress * 100), slider=True)
+        box.label(text=st.stage or "空闲")
 
-    def draw(self, context):
-        st = context.scene.garment_fit
-        lay = self.layout
-        lay.row(align=True).prop(st, "export_scope", expand=True)
+        lay.separator()
+        box = lay.box()
+        box.label(text="导出 UE5", icon="EXPORT")
+        box.row(align=True).prop(st, "export_scope", expand=True)
         if st.export_scope in ("GARMENT", "BOTH"):
-            lay.prop(st, "export_sim")
+            box.prop(st, "export_sim")
             if st.export_sim:
-                lay.prop(st, "export_split_sim")
-        lay.prop(st, "export_path", text="")
+                box.prop(st, "export_split_sim")
+        box.prop(st, "export_path", text="")
+        box.operator("garment_fit.export_fbx", icon="FILE_TICK")
 
 
-CLASSES = (GF_Settings, GF_OT_auto, GF_OT_match, GF_OT_match_loose, GF_OT_scale_match, GF_OT_trim_body,
-           GF_OT_shrink_sleeves, GF_OT_delete_selected, GF_OT_delete_small,
+CLASSES = (GF_Settings, GF_OT_match, GF_OT_scale_match, GF_OT_trim_body,
            GF_OT_pose_only, GF_OT_weights_only,
            GF_OT_pick_body, GF_OT_pick_garment, GF_OT_export,
-           GF_OT_cloth, GF_OT_restore, GF_OT_report, GF_OT_recenter,
-           GF_PT_panel, GF_PT_match_opts, GF_PT_arm, GF_PT_fit,
-           GF_PT_scale, GF_PT_trim, GF_PT_cloth, GF_PT_export)
+           GF_OT_cloth, GF_OT_restore, GF_OT_report, GF_PT_panel)
 
 
 def register():
